@@ -1,0 +1,18 @@
+# This folder doubles as a Python venv root - ignore the venv internals only
+Lib/
+Scripts/
+Include/
+etc/
+share/
+pyvenv.cfg
+
+# Environment variables / secrets
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Uploaded / runtime data (not source)
+uploads/
+ifc_uploads/

@@ -1,0 +1,139 @@
+{
+  "jurisdiction": "Scotland",
+  "document_source": "Scotland Technical Handbooks 2022.",
+  "regulations": [
+  {
+      "unique_id": "SCO-R1",
+      "regulation_name": "Escape route through the storey height",
+      "description": "The escape route should be more than 4.5m above the ground level.",
+      "ifc_element": "IfcBuildingStorey",
+      "ifc_attribute_involved": "elevation",
+      "threshold_mark": 4.5,
+      "comparison": "lte",
+      "unit": "m",
+      "applies_to": "doors",
+      "severity_level": "critical",
+      "doc_reference": "Section 2.9.2, Table 2.3"
+    },
+
+    {
+      "unique_id": "SCO-R2",
+      "regulation_name": "Protected enclosure within the area",
+      "description": "The protected enclosure in a storey should have a height of 4.5m above the ground level",
+      "ifc_element": "IfcWall",
+      "ifc_attribute_involved": "fire_check",
+      "threshold_mark": 4.5,
+      "comparison": "gte",
+      "unit": "m",
+      "applies_to": "room_walls",
+      "severity_level": "high",
+      "doc_reference": "Section 2.9.5 Escape within dwellings"
+    },
+
+    {
+      "unique_id": "SCO-R3",
+      "regulation_name": "Escape route with alternative exits",
+      "description": "The storey should be at a height of 7.5m above the adjacent ground level and have an alternative exit route.",
+      "ifc_element": "IfcBuildingStorey",
+      "ifc_attribute_involved": "count of emergency_exits",
+      "threshold_mark": 7.5,
+      "comparison": "lte",
+      "unit": "m",
+      "applies_to": "storeys",
+      "severity_level": "critical",
+      "doc_reference": "Section 2.9.6"
+    },
+    {
+      "unique_id": "SCO-R4",
+      "regulation_name": "Emergency escape windows",
+      "description": "The windows should be large enough to escape and have an unobstrcuted openable area that is atleast 0.33m2.",
+      "ifc_element": "IfcWindow",
+      "ifc_attribute_involved": "window_area",
+      "threshold_mark": 0.33,
+      "comparison": "gte",
+      "unit": "m2",
+      "applies_to": "each_window",
+      "severity_level": "high",
+      "doc_reference": "Section 2.9.4"
+    },
+    {
+      "unique_id": "SCO-R5",
+      "regulation_name": "Fire suppression system",
+      "description": "The fire system is mandatory in every building design in an event of an fire outbreak inside the building.",
+      "ifc_element": "IfcFireSuppressionTerminal",
+      "ifc_attribute_involved": "count",
+      "threshold_mark": 1,
+      "comparison": "gte",
+      "unit": null,
+      "applies_to": "corridor",
+      "severity_level": "medium",
+      "doc_reference": "Section 2, Standard 2.15"
+    },
+    {
+      "unique_id": "SCO-R6",
+      "regulation_name": "Distance from protected lobby",
+      "description": "To help evacuees reach the escape stair, the travel distance within the lobby is limited to 10m.",
+      "ifc_element": "IfcSpace",
+      "ifc_attribute_involved": "distance_travelled",
+      "threshold_mark": 10,
+      "comparison": "lte",
+      "unit": "m",
+      "applies_to": "window",
+      "severity_level": "critical",
+      "doc_reference": "Section 2.9.13"
+    },
+    {
+      "unique_id": "SCO-R7",
+      "regulation_name": "Escape route from the nearest Stair serving the basement storey",
+      "description": "The stair serving the basement storey should be separated from the ground storey and have an alternate window to escape",
+      "ifc_element": "IfcStair",
+      "ifc_attribute_involved": "separate_basement_stair",
+      "threshold_mark": 1,
+      "comparison": "lte",
+      "unit": null,
+      "applies_to": "window_height",
+      "severity_level": "medium",
+      "doc_reference": "Section 2.9.3"
+    },
+    {
+      "unique_id": "SCO-R8",
+      "regulation_name": "Storey area limits",
+      "description": "The area of an individual storey more than 200m2 cannot follow the standard fire safety guidance.",
+      "ifc_element": "IfcSpace",
+      "ifc_attribute_involved": "space_area",
+      "threshold_mark": 200,
+      "comparison": "lte",
+      "unit": "m2",
+      "applies_to": "spaces",
+      "severity_level": "high",
+      "doc_reference": "Section 2.9.1"
+    },
+    {
+      "unique_id": "SCO-R9",
+      "regulation_name": "Escape route from protected zones",
+      "description": "The external wall adjoining the protected wall protecting the zone near the final exit should not be more than 2m.",
+      "ifc_element": "IfcWall",
+      "ifc_attribute_involved": "nearest_route",
+      "threshold_mark": 2,
+      "comparison": "lte",
+      "unit": "m",
+      "applies_to": "walls",
+      "severity_level": "critical",
+      "doc_reference": "Section 2.9.12"
+    },
+    {
+      "unique_id": "SCO-R10",
+      "regulation_name": "Escape route using external stairs",
+      "description": "The external escape stair should not serve a building where the topmost storey height is more than 7.5m above the adjacent ground.",
+      "ifc_element": "IfcStair",
+      "ifc_attribute_involved": "ex_stairs",
+      "threshold_mark": 7.5,
+      "comparison": "gte",
+      "unit": "m",
+      "applies_to": "stairs",
+      "severity_level": "critical",
+      "doc_reference": "Section 2.9.22"
+    }
+  ]
+
+}

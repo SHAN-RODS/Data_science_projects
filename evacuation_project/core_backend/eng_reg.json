@@ -1,0 +1,178 @@
+{
+  "jurisdiction": "England",
+  "document_source": "England regulations Approved Document-B Volume 1 Fire Safety with updated 2019 and 2022 Amendments.", 
+  "regulations": [
+  {
+      "unique_id": "ENG-R1",
+      "regulation_name": "Minimum door width for escape route",   
+      "description": "The door or any doorway in the direction to escape route should be open having 750mm wide if 60 people might be expected to use it during a fire such that the door is open by a minimum of 90 degrees.",
+      "ifc_element": "IfcDoor",
+      "ifc_attribute_involved": "OverallWidth",
+      "comparison": "gte",
+      "threshold_mark": 750,
+      "unit": "mm",
+      "applies_to": "doors",
+      "severity_level": "critical",
+      "doc_reference": "provisions for doors with escape route(Appendix B)"
+    },
+    
+    {
+      "unique_id": "ENG-R2",
+      "regulation_name": "Direction for door opening for escape route",   
+      "description": "All doors on escape route should be hung and open by a minimum of 90 degrees with a swing clear of any change of floor level.",
+      "ifc_element": "IfcDoor",
+      "ifc_attribute_involved": "swing_angle",
+      "comparison": "gte",
+      "threshold_mark": 90,
+      "unit": "degrees",
+      "applies_to": "doors",
+      "severity_level": "critical",
+      "doc_reference": "Section 3, Paragraph 3.96-3.96"
+    },
+
+    {
+      "unique_id": "ENG-R3",
+      "regulation_name": "Storey Height escape route",   
+      "description": "There should be an alternative escape route with two or more storeys more than 4.5m above ground level.",
+      "ifc_element": "IfcBuildingStorey",
+      "ifc_attribute_involved": "elevation",
+      "threshold_mark": 4.5,
+      "comparison": "gte",
+      "unit": "m",
+      "applies_to": "Storey",
+      "severity_level": "medium",
+      "doc_reference": "Section 3, Paragraph 2.6" 
+    },
+    {
+      "unique_id": "ENG-R4",
+      "regulation_name": "Design and construction of common stairs",   
+      "description": "A firefighting stair or a common stair in a bulidng with a storey should have 18m and be 1100 clear width and any handrails or strings intruding should be maximum 100mm ignoring each side.",
+      "ifc_element": "IfcStair",
+      "ifc_attribute_involved": "Width",
+      "threshold_mark": 1.1,
+      "comparison": "gte",
+      "unit": "metres",
+      "applies_to": "stair",
+      "severity_level": "high",
+      "doc_reference": "Section 3, Paragraph 3.60(2026 Amendment regulation) & 3.63"
+    },
+    {
+      "unique_id": "ENG-R5",  
+      "regulation_name": "Common escape route",   
+      "description": "The common corridors should be protected corridors and the wall between each flat and the corridor should be a compartment wall where the top storey is upto 5m above ground level.",
+      "ifc_element": "IfcSpace",
+      "ifc_attribute_involved": "name keyword match",
+      "threshold_mark": 1,
+      "comparison": "gte",
+      "unit": "metres",
+      "applies_to": "corridor",
+      "severity_level": "high",
+      "doc_reference": "Section 3, Paragraph 3.34 & 3.38(2026 amendment)"
+    },
+    {
+      "unique_id": "ENG-R6",
+      "regulation_name": "Emergency Escape windows",   
+      "description": "Windows should have an unobstructed openable area atleast 0.33 square metre.",
+      "ifc_element": "IfcWindow",
+      "ifc_attribute_involved": "OverallWidth or OverallHeight- calculated area",
+      "threshold_mark": 0.33,
+      "comparison": "gte",
+      "unit": "sqm",
+      "applies_to": "window",
+      "severity_level": "high",
+      "doc_reference": "Section 2, Paragraph 2.10(a)(i) & Section 3, Para 3.6(a)(i)"
+    },
+    {
+      "unique_id": "ENG-R7",
+      "regulation_name": "Emergency Escape windows- minimum height and width",   
+      "description": "The Escape windows should have a minimum height of 450mm and minimum width of 450mm in addition to the 0.33sqm area.",
+      "ifc_element": "IfcWindow",
+      "ifc_attribute_involved": "OverallHeight and OverallWidth separately.",
+      "threshold_mark": 0.45,
+      "comparison": "gte",
+      "unit": "metres",
+      "applies_to": "window_height",
+      "severity_level": "high",
+      "doc_reference": "Section 2, Paragraph 2.10(a)(iii) & Seciton 3, Para 3.6(a)(ii)"
+    },
+    {
+      "unique_id": "ENG-R8",
+      "regulation_name": "Fire protection of lift installations",   
+      "description": "Lift wells must be enclosed with a protected stairway and different comapartments should form a protected shaft. In basements, the lift should be within the enclosure of a protected stairway.",
+      "ifc_element": "IfcTransportElement",
+      "ifc_attribute_involved": "PredefinedType= ELEVATOR or name keyword",
+      "threshold_mark": 0,
+      "comparison": "gte",
+      "unit": "metres",
+      "applies_to": "elevator",
+      "severity_level": "critical",
+      "doc_reference": "Section 3, Paragraph 3.99-3.102 & Para 3.102(2026 amendment)"
+    },
+    {
+      "unique_id": "ENG-R9",
+      "regulation_name": "Evacuation lifts- protected shafts",   
+      "description": "When any evacuation shaft is provided, it should be located within an evacuation shaft containing a protected stairway, evacuation lift and lobby. The lobby must provide a refuge area for those waiting for the evacuation lift, have direct access to a stair and not be accessible from any flat, storage room or electrical equipment room.",
+      "ifc_element": "IfcTransportElement",
+      "ifc_attribute_involved": "is_evac_lift",
+      "threshold_mark": 0,
+      "comparison": "gte",
+      "unit": "presence",
+      "applies_to": "elevators",
+      "severity_level": "high",
+      "doc_reference": "Section 3, Paragraph 3.29 (2026 Amendment)"
+    },
+    {
+      "unique_id": "ENG-R10",
+      "regulation_name": "Compartment walls and flats",   
+      "description": "Every floor slab and wall should have the minimum fire resistance upot 60 mins and complete barrier between the compartment walls ",
+      "ifc_element": "IfcWall and IfcSlab",
+      "ifc_attribute_involved": "slab_type=Floor",
+      "threshold_mark": 60,
+      "comparison": "gte",
+      "unit": "mins",
+      "applies_to": "slabs",
+      "severity_level": "high",
+      "doc_reference": "Section 7, Paragraph 7.1 & 7.5 and Table B1"
+    },
+    {
+      "unique_id": "ENG-R11",
+      "regulation_name": "Final exits must be accessible",
+      "description": "Every building must have at least one final exit giving direct access to a place of safety outside the building. Final exits must not be a barrier to people with impaired mobility.",
+      "ifc_element": "IfcDoor",
+      "ifc_attribute_involved": "is_emergency_exit",
+      "comparison": "gte",
+      "threshold_mark": 1,
+      "unit": "count",
+      "applies_to": "exits",
+      "severity_level": "critical",
+      "doc_reference": "Section 3, Paragraph 3.1 & Appendix B (verify exact paragraph)"
+    },
+    {
+      "unique_id": "ENG-R12",
+      "regulation_name": "Minimum number of escape routes",
+      "description": "Every storey should be served by at least two escape routes so occupants have an alternative way out if one route is blocked by fire, smoke or heat.",
+      "ifc_element": "IfcDoor",
+      "ifc_attribute_involved": "count of emergency exits",
+      "comparison": "gte",
+      "threshold_mark": 2,
+      "unit": "count",
+      "applies_to": "exits",
+      "severity_level": "high",
+      "doc_reference": "Section 3, Table 3.1 (verify exact paragraph)"
+    },
+    {
+      "unique_id": "ENG-R13",
+      "regulation_name": "Escalators are not an acceptable means of escape",
+      "description": "Escalators and moving walkways must not be counted as part of the number or capacity of escape routes, as they may stop or reverse during a fire and cannot be relied upon to move people to safety.",
+      "ifc_element": "IfcTransportElement",
+      "ifc_attribute_involved": "category=escalator",
+      "comparison": "eq",
+      "threshold_mark": 0,
+      "unit": "presence",
+      "applies_to": "escalators",
+      "severity_level": "medium",
+      "doc_reference": "Section 3, Paragraph 3.16 (verify exact paragraph)"
+    }
+  ]
+
+}
