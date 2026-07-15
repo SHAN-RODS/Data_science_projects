@@ -5,7 +5,7 @@
   {
       "unique_id": "WAL-R1",
       "regulation_name": "Means of escape",   
-      "description": "Each floor should have 4.5m above ground level and should have a protected stairway.",
+      "description": "Each floor should have 4.5m above the ground level and have a protected stairway to escape.",
       "ifc_element": ["IfcSpace","IfcStair","IfcBuildingStorey"],
       "ifc_attribute_involved": "elevation",
       "threshold_mark": 4.5,
@@ -13,13 +13,13 @@
       "unit": "m",
       "applies_to": "Storey",
       "severity_level": "critical",
-      "doc_reference": "Section 3 Paragraph 3.6"
+      "doc_reference": "Section 3, Paragraph 3.6"
     },
     
     {
       "unique_id": "WAL-R2",
-      "regulation_name": "Floor level above ground level should have an escape route",   
-      "description": "The storey level should be greater than 7.5m above the ground level",
+      "regulation_name": "The floor level above the ground level should have an escape route to exit.",   
+      "description": "The building storey level should be situated and be greater than 7.5m or more above the ground level",
       "ifc_element": ["IfcSpace","IfcBuildingStorey"],
       "ifc_attribute_involved": "elevation_m",
       "threshold_mark": 7.5,
@@ -27,13 +27,13 @@
       "unit": "m",
       "applies_to": "doors",
       "severity_level": "high",
-      "doc_reference": "Section 3 Paragraph 3.9-3.13"
+      "doc_reference": "Section 3 Paragraph 3.7"
     },
 
     {
       "unique_id": "WAL-R3",
-      "regulation_name": "Emergency Windows",   
-      "description": "The emergency window should have an unobstructable area that should be 0.33m.",
+      "regulation_name": "Emergency Windows for escaping.",   
+      "description": "The emergency window should have an unobstructable openable area that should be 0.33metre square.",
       "ifc_element": "IfcWindow",
       "ifc_attribute_involved": "clear_area",
       "threshold_mark": 0.33,
@@ -41,12 +41,12 @@
       "unit": "m2",
       "applies_to": "windows",
       "severity_level": "critical",
-      "doc_reference": "Section 3 Paragraph 3.8" 
+      "doc_reference": "Section 3, Paragraph 3.8" 
     },
     {
       "unique_id": "WAL-R4",
-      "regulation_name": "Automatic fire suppression system",   
-      "description": "The fire suppression system should be present in all the residential buildings and cover the entire building.",
+      "regulation_name": "Automatic fire suppression system required",   
+      "description": "The fire suppression system should be present in all the residential buildings and cover the entire building that is required by the technical standard.",
       "ifc_element": "IfcFireSuppressionTerminal",
       "ifc_attribute_involved": "count",
       "threshold_mark": 1,    
@@ -54,25 +54,25 @@
       "unit": "null",
       "applies_to": "building",
       "severity_level": "high",
-      "doc_reference": "Section 2 Paragraph 2.2- 2.4,Regulation 37A"
+      "doc_reference": "Section 2, Paragraph 2.2(Regulation 37A)-2.4"
     },
     {
       "unique_id": "WAL-R5",  
-      "regulation_name": "Emergency window height",   
-      "description": "The emergency window should have an unobstructable area that should be 0.33m and 450mm high and 450m wide.",
+      "regulation_name": "Emergency window maximum and minimumheight",   
+      "description": "The emergency window should have an unobstructable area that should be 0.33m and at least 450mm high and 450m wide.",
       "ifc_element": "IfcSpace",
       "ifc_attribute_involved": "window_height",
-      "threshold_mark": {"min": 800, "max": 1100 } ,
+      "threshold_mark": {"min": 800, "max": 1100 },
       "comparison": "gte",
       "unit": "mm",
       "applies_to": "windows",
       "severity_level": "critical",
-      "doc_reference": "Section 3 Paragraph 3.8"
+      "doc_reference": "Section 3, Paragraph 3.8"
     },
     {
       "unique_id": "WAL-R6",
-      "regulation_name": "Basement escape route",   
-      "description": "The basement storey that contains any habituable room should have an external door or window ro a protected stairway leading to the final exit.",
+      "regulation_name": "Basement possible escape route",   
+      "description": "If The basement storey contains any habituable room, then it should either have an external door, window or a protected stairway leading from the basement to the final exit.",
       "ifc_element": "IfcWindow",
       "ifc_attribute_involved": "external_basement",
       "threshold_mark": 1,
@@ -80,12 +80,12 @@
       "unit": "null",
       "applies_to": "basement",
       "severity_level": "medium",
-      "doc_reference": "Section 3 Paragraph 3.13"
+      "doc_reference": "Section 3, Paragraph 3.13(a)(b)"
     },
     {
       "unique_id": "WAL-R7",
       "regulation_name": "Escape stairs width",   
-      "description": "The external escape stair must have a clear width of 1800mm from the stairs to the place of safety.",
+      "description": "The external escape stair within the entire building must have a clear width of 1800mm from the stairs to the place of safety.",
       "ifc_element": "IfcStairFlight",
       "ifc_attribute_involved": "width_m",
       "threshold_mark": 1800,
@@ -93,7 +93,7 @@
       "unit": "mm",
       "applies_to": "stairs",
       "severity_level": "critical",
-      "doc_reference": "Section 3 Paragraph 3.15"
+      "doc_reference": "Section 3, Paragraph 3.15 (c)"
     },
     {
       "unique_id": "WAL-R8",
@@ -106,12 +106,12 @@
       "unit": "m",
       "applies_to": "passsenger_lift",
       "severity_level": "major",
-      "doc_reference": "Section 3 Paragraph 3.18"
+      "doc_reference": "Section 3, Paragraph 3.18"
     },
     {
       "unique_id": "WAL-R9",
-      "regulation_name": "Smoke Alarms Detection within the space",   
-      "description": "There shoudle be a smoke alarm in the circulation space within 7.5m of the door of every room.",
+      "regulation_name": "Smoke Alarms Detection within the building space",   
+      "description": "There should be a smoke alarm present in the circulation space within 7.5m of the door of every room.",
       "ifc_element": "IfcSpace",
       "ifc_attribute_involved": "smoke_alarm",
       "threshold_mark": 7.5,
@@ -123,8 +123,8 @@
     },
     {
       "unique_id": "WAL-R10",
-      "regulation_name": "Protected Stairway",   
-      "description": "The barriers should be provided above the enclosures to a protected stairway with a floor more than 4.5m above ground level.",
+      "regulation_name": "Protected Stairway in a storey",   
+      "description": "The barriers should be provided above the enclosures to a protected stairway with a floor more than 4.5m above the ground level.",
       "ifc_element": "IfcStair",
       "ifc_attribute_involved": "stair_barrier",
       "threshold_mark": 4.5,
