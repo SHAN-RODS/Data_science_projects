@@ -187,6 +187,52 @@ def annotate(summary, jurisdiction="england"):
     return {"regulation_notes": notes, "not_assessed": not_assessed}
 
 
+def summarize_annotations(annotation_result):
+    """Collapse the per-element notes into a per-regulation summary + the flagged exceptions.
+
+    The full within-limit list is high volume and low signal (one row per compliant door/window);
+    this keeps the traceable counts + measured range and lists only the requires_manual_review items
+    in full. Non-verdict throughout.
+    """
+    notes = annotation_result.get("regulation_notes", [])
+    groups = {}
+    for note in notes:
+        groups.setdefault(note["regulation_id"], []).append(note)
+
+    by_regulation = []
+    for reg_id, group in groups.items():
+        measured = [g["measured"] for g in group if isinstance(g["measured"], (int, float))]
+        first = group[0]
+        by_regulation.append({
+            "regulation_id": reg_id,
+            "regulation_name": first.get("regulation_name"),
+            "reference": first.get("reference"),
+            "element_type": first.get("element_type"),
+            "checked": len(group),
+            "within_limit": sum(1 for g in group if g["flag"] == "within_limit"),
+            "requires_manual_review": sum(1 for g in group if g["flag"] == "requires_manual_review"),
+            "measured_min": round(min(measured), 3) if measured else None,
+            "measured_max": round(max(measured), 3) if measured else None,
+            "limit": first.get("limit"),
+        })
+
+    exceptions = [n for n in notes if n["flag"] == "requires_manual_review"]
+    return {"by_regulation": by_regulation, "requires_manual_review": exceptions}
+
+
+def annotate_and_summarize(summary, jurisdiction="england"):
+    """Annotate the model then return the compact building-level regulation block."""
+    result = annotate(summary, jurisdiction=jurisdiction)
+    summarised = summarize_annotations(result)
+    return {
+        "jurisdiction": jurisdiction,
+        "basis": "measured value vs applicable limit; non-verdict reference only",
+        "by_regulation": summarised["by_regulation"],
+        "requires_manual_review": summarised["requires_manual_review"],
+        "not_assessed": result["not_assessed"],
+    }
+
+
 # England — Approved Document B Volume 1 
 
 def door_width(doors, regs):

@@ -28,8 +28,10 @@ AREA_FACTORS_M2_PER_PERSON = {
 }
 
 # Spaces that do not carry a design occupant load of their own (people are counted in the rooms
-# they occupy, not in the routes/plant they pass through). Occupant load = 0, not "not assessed".
-NON_OCCUPIABLE = {"circulation", "stair", "plant", "parking", "storage", "measurement_zone"}
+# they occupy, not in the routes/plant/sanitary they pass through). Occupant load = 0, not
+# "not assessed" -- bathrooms/WCs have transient use and no standalone design occupancy.
+NON_OCCUPIABLE = {"circulation", "stair", "plant", "parking", "storage", "measurement_zone",
+                  "sanitary"}
 
 FACTOR_SOURCE = "indicative area factor (approx, not compliance-grade)"
 

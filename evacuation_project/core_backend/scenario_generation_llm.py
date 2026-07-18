@@ -29,6 +29,11 @@ from core_backend.egress import ground_spaces, discount_exit
 DISTANCE_METHOD = "centroid straight-line, summed along the traversal path (approx — not compliance-grade)"
 
 
+def _round(value, ndigits):
+    """Round a number for output; pass through None / non-numbers unchanged."""
+    return round(value, ndigits) if isinstance(value, (int, float)) else value
+
+
 # --- what the LLM produces per variant (the AI-owned fields) ------------------------------------
 class Route(BaseModel):
     from_area: str = Field(description="where occupants start (e.g. a storey or space name)")
@@ -148,11 +153,11 @@ def _spaces_block(grounded, classified):
             "use_type_confidence": c.get("use_type_confidence"),
             "use_type_source": c.get("use_type_source"),
             "storey": (s["storey"] or {}).get("name"),
-            "area_m2": s["area_m2"],
+            "area_m2": _round(s["area_m2"], 2),
             "occupant_load": s["occupant_load"],
             "occupant_basis": s["occupant_basis"],
             "nearest_exit": s["nearest_exit"],
-            "approx_travel_distance_m": s["approx_travel_distance_m"],
+            "approx_travel_distance_m": _round(s["approx_travel_distance_m"], 1),
             "reachable": s["reachable"],
         })
     return out
@@ -163,12 +168,12 @@ def _circulation_block(summary, classified):
     out = []
     for stair in summary.get("stairs", []):
         out.append({"id": stair["id"], "name": stair.get("name"), "type": "internal_stair",
-                    "width_m": stair.get("width")})
+                    "width_m": _round(stair.get("width"), 2)})
     return out
 
 
 def _exits_block(final_exits):
-    return [{"id": e["id"], "name": e["name"], "type": "final_exit", "width_m": e["width_m"]}
+    return [{"id": e["id"], "name": e["name"], "type": "final_exit", "width_m": _round(e["width_m"], 2)}
             for e in final_exits]
 
 
@@ -182,26 +187,34 @@ def _conditions(building, final_exits, discounted_ids, occupancy_state):
     }
 
 
-def generate_scenario_object(summary, classified, jurisdiction, reg_result, llm=None, model_label=None):
-    """Assemble the whole-building scenario object with >=2 grounded, LLM-reasoned variants."""
+def generate_scenario_object(summary, classified, jurisdiction, reg_block, llm=None, model_label=None):
+    """Assemble the whole-building scenario object with >=2 grounded, LLM-reasoned variants.
+
+    ``reg_block`` is the compact building-level regulation block from
+    ``uk_regulation_checking.annotate_and_summarize`` (jurisdiction, basis, by_regulation,
+    requires_manual_review, not_assessed).
+    """
     if llm is None:
         llm, model_label = select_llm(max_tokens=4096)
 
     base_grounded = ground_spaces(summary, classified)
     building = _building_block(summary, base_grounded, jurisdiction)
 
-    reg_notes = reg_result.get("regulation_notes", [])
-    flag_counts = Counter(n["flag"] for n in reg_notes)
-    reg_summary = (f"{len(reg_notes)} measured notes ({dict(flag_counts)}); "
-                   f"{len(reg_result.get('not_assessed', []))} not_assessed")
+    by_reg = reg_block.get("by_regulation", [])
+    reg_na = reg_block.get("not_assessed", [])
+    total_checked = sum(r["checked"] for r in by_reg)
+    total_within = sum(r["within_limit"] for r in by_reg)
+    total_review = sum(r["requires_manual_review"] for r in by_reg)
+    reg_summary = (f"{total_checked} elements checked across {len(by_reg)} rules; "
+                   f"{total_within} within limit, {total_review} require manual review; "
+                   f"{len(reg_na)} not_assessed")
 
     scenarios = []
 
     # --- SCN-BASE: all exits available -----------------------------------------------------------
     base_conditions = _conditions(building, base_grounded["final_exits"], set(), "night")
     base_content = _generate_variant(llm, building, base_grounded, base_conditions, reg_summary)
-    scenarios.append(_assemble_scenario("SCN-BASE", "base_case", base_conditions,
-                                        base_content, reg_notes))
+    scenarios.append(_assemble_scenario("SCN-BASE", "base_case", base_conditions, base_content))
 
     # --- SCN-EXIT-BLOCKED: discount the busiest final exit ---------------------------------------
     usage = Counter(s["nearest_exit"] for s in base_grounded["spaces"] if s["nearest_exit"])
@@ -213,7 +226,7 @@ def generate_scenario_object(summary, classified, jurisdiction, reg_result, llm=
         blocked_content = _generate_variant(llm, building, blocked_grounded,
                                             blocked_conditions, reg_summary)
         scenarios.append(_assemble_scenario("SCN-EXIT-BLOCKED", "one_exit_discounted",
-                                            blocked_conditions, blocked_content, reg_notes))
+                                            blocked_conditions, blocked_content))
 
     return {
         "schema_version": "1.0",
@@ -230,12 +243,19 @@ def generate_scenario_object(summary, classified, jurisdiction, reg_result, llm=
         "circulation": _circulation_block(summary, classified),
         "spaces": _spaces_block(base_grounded, classified),
         "scenarios": scenarios,
+        # building-level regulation reference: per-regulation summary + only the flagged exceptions
+        "regulation_check": {
+            "jurisdiction": reg_block.get("jurisdiction", jurisdiction),
+            "basis": reg_block.get("basis", "measured value vs applicable limit; non-verdict reference only"),
+            "by_regulation": by_reg,
+            "requires_manual_review": reg_block.get("requires_manual_review", []),
+        },
         "validation": {},   # filled by validation.validate()
-        "not_assessed": base_grounded["not_assessed"] + reg_result.get("not_assessed", []),
+        "not_assessed": base_grounded["not_assessed"] + reg_na,
     }
 
 
-def _assemble_scenario(scenario_id, scenario_type, conditions, content, reg_notes):
+def _assemble_scenario(scenario_id, scenario_type, conditions, content):
     return {
         "id": scenario_id,
         "type": scenario_type,
@@ -251,7 +271,6 @@ def _assemble_scenario(scenario_id, scenario_type, conditions, content, reg_note
         "routes": [r.model_dump() for r in content.routes],
         "bottlenecks": content.bottlenecks,
         "risks": content.risks,
-        "regulation_notes": reg_notes,
         "narrative": content.narrative,
     }
 
@@ -260,13 +279,13 @@ def build_full_scenario(ifc_path, jurisdiction="england", use_llm=True):
     """End-to-end: parse -> classify -> annotate -> generate the whole-building scenario object."""
     from core_backend.ifc_parser import parser_summary
     from core_backend.space_classifier import classify_spaces
-    from core_backend.uk_regulation_checking import annotate
+    from core_backend.uk_regulation_checking import annotate_and_summarize
 
     summary = parser_summary(ifc_path)
     summary["source_ifc"] = os.path.basename(ifc_path)
     classified = classify_spaces(summary["spaces"], use_llm=use_llm)
-    reg_result = annotate(summary, jurisdiction=jurisdiction)
-    return generate_scenario_object(summary, classified, jurisdiction, reg_result)
+    reg_block = annotate_and_summarize(summary, jurisdiction=jurisdiction)
+    return generate_scenario_object(summary, classified, jurisdiction, reg_block)
 
 
 if __name__ == "__main__":

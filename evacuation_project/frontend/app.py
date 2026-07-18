@@ -193,13 +193,22 @@ st.divider()
 with st.expander(f"Spaces ({len(obj['spaces'])}) — use-type, occupant load, nearest exit, travel distance"):
     st.dataframe(obj["spaces"], use_container_width=True, hide_index=True)
 
-# regulation reference (secondary)
-reg_notes = scn.get("regulation_notes", [])
-with st.expander(f"Regulation reference — {jurisdiction_label} ({len(reg_notes)} measured notes, non-verdict)"):
+# regulation reference (building-level, secondary) — summary + only the flagged exceptions
+reg_check = obj.get("regulation_check", {})
+by_reg = reg_check.get("by_regulation", [])
+flagged = reg_check.get("requires_manual_review", [])
+with st.expander(f"Regulation reference — {jurisdiction_label} "
+                 f"({len(by_reg)} rules checked, {len(flagged)} item(s) to review, non-verdict)"):
     st.caption("Measured value + applicable limit + flag. Reference only — not a compliance verdict.")
-    if reg_notes:
-        st.dataframe(reg_notes, use_container_width=True, hide_index=True)
-    else:
+    if by_reg:
+        st.markdown("**Per-regulation summary**")
+        st.dataframe(by_reg, use_container_width=True, hide_index=True)
+    if flagged:
+        st.markdown("**Requires manual review**")
+        st.dataframe(flagged, use_container_width=True, hide_index=True)
+    elif by_reg:
+        st.success("No elements flagged for manual review.")
+    if not by_reg:
         st.caption("No measurable notes for this jurisdiction/model.")
 
 st.divider()

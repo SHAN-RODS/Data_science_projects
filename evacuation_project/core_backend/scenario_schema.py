@@ -99,9 +99,33 @@ SCENARIO_SCHEMA = {
                     "routes": {"type": "array"},
                     "bottlenecks": {"type": "array"},
                     "risks": {"type": "array"},
-                    "regulation_notes": {"type": "array"},
                     "narrative": {"type": "string"},
                 },
+            },
+        },
+        # building-level regulation reference (non-verdict): per-regulation summary + flagged exceptions
+        "regulation_check": {
+            "type": "object",
+            "properties": {
+                "jurisdiction": {"type": "string"},
+                "basis": {"type": "string"},
+                "by_regulation": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "regulation_id": {"type": "string"},
+                            "element_type": {"type": ["string", "null"]},
+                            "checked": {"type": "integer", "minimum": 0},
+                            "within_limit": {"type": "integer", "minimum": 0},
+                            "requires_manual_review": {"type": "integer", "minimum": 0},
+                            "measured_min": {"type": ["number", "null"]},
+                            "measured_max": {"type": ["number", "null"]},
+                            "limit": {"type": ["number", "integer", "null"]},
+                        },
+                    },
+                },
+                "requires_manual_review": {"type": "array"},
             },
         },
         "validation": {"type": "object"},
