@@ -68,6 +68,125 @@ def distance_m(pos_a, pos_b):
     return sum((a - b) ** 2 for a, b in zip(pos_a, pos_b)) ** 0.5
 
 
+# --- Annotation layer (reframed) ---------------------------------------------------------------
+#
+# The legacy checkers below emit a flag only when an element *violates* a threshold, and silently
+# skip elements whose attribute is missing. The pivot needs the opposite: a non-verdict reference
+# layer that reports the *measured value + applicable limit + a flag* for every measurable element
+# (whether it meets the limit or not), and surfaces missing data explicitly. The scenario generator
+# may cite these notes; it never treats them as a compliance verdict. A below-limit measurement is
+# flagged "requires_manual_review", never "non-compliant" -- this tool does not issue verdicts.
+
+_AREA_UNITS = ("sqm", "m2", "m²")
+
+
+def _rule_kind(rule):
+    """Classify a jurisdiction rule into a measurable annotation kind, or None to skip.
+
+    Dispatch on ``ifc_element`` + ``ifc_attribute_involved`` (reliable) rather than ``applies_to``,
+    which is mislabelled in several of the jurisdiction JSONs (e.g. storey-height rules tagged
+    ``applies_to: "doors"``). ``ifc_element`` may be a string or a list.
+    """
+    element = rule.get("ifc_element") or ""
+    if isinstance(element, list):
+        element = " ".join(element)
+    element = element.lower()
+    attr = (rule.get("ifc_attribute_involved") or "").lower()
+    unit = (rule.get("unit") or "").lower()
+
+    if "ifcdoor" in element and "width" in attr:
+        return "door_width"
+    if "ifcstair" in element and "flight" not in element and "width" in attr:
+        return "stair_width"
+    if "ifcwindow" in element and "area" in attr and unit in _AREA_UNITS:
+        return "window_area"
+    if "ifcdoor" in element and ("emergency" in attr or "exit" in attr) and unit == "count":
+        return "exits_count"
+    return None
+
+
+def _note(rule, element, element_type, attribute, measured, limit, meets):
+    return {
+        "regulation_id": rule["unique_id"],
+        "regulation_name": rule.get("regulation_name"),
+        "reference": rule.get("doc_reference"),
+        "element_id": element.get("id", "BUILDING"),
+        "element_name": element.get("name", "Building"),
+        "element_type": element_type,
+        "attribute": attribute,
+        "measured": measured,
+        "limit": limit,
+        # non-verdict: meets the reference limit, or a reviewer should check it -- never "violation"
+        "flag": "within_limit" if meets else "requires_manual_review",
+    }
+
+
+def _missing(rule, element, element_type, attribute):
+    return {
+        "regulation_id": rule["unique_id"],
+        "reference": rule.get("doc_reference"),
+        "element_id": element.get("id"),
+        "element_name": element.get("name"),
+        "element_type": element_type,
+        "missing": attribute,
+        "action": "flagged, not silently passed",
+    }
+
+
+def annotate(summary, jurisdiction="england"):
+    """Produce non-verdict reference notes + a not_assessed list for the measurable egress elements.
+
+    Returns ``{"regulation_notes": [...], "not_assessed": [...]}``. Works across the jurisdiction
+    JSONs by dispatching on each rule's ``applies_to`` + ``unit`` rather than hardcoded IDs.
+    """
+    regs = load_regs(jurisdiction)
+    notes, not_assessed = [], []
+
+    for rule in regs.values():
+        kind = _rule_kind(rule)
+        if kind is None:
+            continue
+
+        if kind == "door_width":
+            limit = to_metres(rule["threshold_mark"], rule.get("unit"))
+            for door in summary.get("doors", []):
+                width = door.get("width_m")
+                if width is None:
+                    not_assessed.append(_missing(rule, door, "door", "width"))
+                else:
+                    notes.append(_note(rule, door, "door", "width_m",
+                                       round(width, 3), limit, width >= limit))
+
+        elif kind == "stair_width":
+            limit = to_metres(rule["threshold_mark"], rule.get("unit"))
+            for stair in summary.get("stairs", []):
+                width = stair.get("width")
+                if width is None:
+                    not_assessed.append(_missing(rule, stair, "stair", "width"))
+                else:
+                    notes.append(_note(rule, stair, "stair", "width",
+                                       round(width, 3), limit, width >= limit))
+
+        elif kind == "window_area":
+            limit = rule["threshold_mark"]
+            for window in summary.get("windows", []):
+                area = window.get("area")
+                if area is None:
+                    not_assessed.append(_missing(rule, window, "window", "opening area"))
+                else:
+                    notes.append(_note(rule, window, "window", "area_m2",
+                                       round(area, 3), limit, area >= limit))
+
+        elif kind == "exits_count":
+            limit = int(rule["threshold_mark"])
+            count = len(summary.get("emergency_exits", []))
+            building = {"id": "BUILDING", "name": "Building"}
+            notes.append(_note(rule, building, "exits", "emergency_exit_count",
+                               count, limit, count >= limit))
+
+    return {"regulation_notes": notes, "not_assessed": not_assessed}
+
+
 # England — Approved Document B Volume 1 
 
 def door_width(doors, regs):
@@ -535,18 +654,19 @@ def check_all_rules(summary, jurisdiction="england"):
 
 
 if __name__ == "__main__":
+    from core_backend.sample_paths import resolve_ifc
+    from collections import Counter
 
-    ifc_path = sys.argv[1] if len(sys.argv) > 1 else (
-        r"C:\Users\Shannan\Desktop\Msc data science uog\term 3- msc project"
-        r"\bim residential models\ARK_NordicLCA_Housing_Concrete_As-Built_Revit-IFC4X3 original.ifc"
-    )
-    summary = parser_summary(ifc_path)
+    summary = parser_summary(resolve_ifc(sys.argv))
+
+    # New: non-verdict annotation layer (measured + limit + flag; missing -> not_assessed)
     for jurisdiction in ["england", "wales", "northern_ireland", "scotland"]:
-        violations = check_all_rules(summary, jurisdiction=jurisdiction)
-        print(f"\n {jurisdiction.upper()} — {len(violations)} flags")
-        for violation in violations:
-            rule = violation["rule"]
-            print(f"  [{rule['severity_level'].upper()}] {rule['unique_id']} — "
-                  f"{violation['element_type']} — {violation['element_name']}")
-            print(f"  {violation['issue']}\n")
+        result = annotate(summary, jurisdiction=jurisdiction)
+        notes, missing = result["regulation_notes"], result["not_assessed"]
+        flags = Counter(n["flag"] for n in notes)
+        print(f"\n{jurisdiction.upper()} — {len(notes)} annotation notes "
+              f"({dict(flags)}), {len(missing)} not_assessed")
+        for n in notes[:4]:
+            print(f"  {n['regulation_id']} {n['element_type']}/{n['element_name']}: "
+                  f"measured={n['measured']} limit={n['limit']} -> {n['flag']}")
 

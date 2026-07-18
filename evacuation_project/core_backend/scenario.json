@@ -1,0 +1,94 @@
+{
+  "building": {
+    "occupancy_type": "",
+    "storeys": 0,
+    "total_floor_area_m2": 0,
+    "total_occupant_load": 0
+  },
+
+  "exits": [
+    {
+      "id": "",
+      "guid": "",
+      "name": "",
+      "type": "",
+      "width_m": 0,
+      "storey": ""
+    }
+  ],
+
+  "circulation": [
+    {
+      "id": "",
+      "guid": "",
+      "name": "",
+      "type": "",
+      "width_m": 0,
+      "connects": []
+    }
+  ],
+
+  "spaces": [
+    {
+      "guid": "",
+      "name": "",
+      "use_type": "",
+      "use_type_confidence": 0,
+      "storey": "",
+      "area_m2": 0,
+      "occupant_load": 0,
+      "occupant_basis": "",
+      "nearest_exit": "",
+      "approx_travel_distance_m": 0
+    }
+  ],
+
+  "scenarios": [
+    {
+      "id": "",
+      "type": "",
+      "title": "",
+
+      "conditions": {
+        "exits_available": [],
+        "exits_discounted": [],
+        "occupancy_state": "",
+        "occupants_total": 0
+      },
+
+      "assumptions": [],
+
+      "occupant_distribution": [
+        {
+          "space": "",
+          "occupants": 0
+        }
+      ],
+
+      "routes": [
+        {
+          "from": "",
+          "via": [],
+          "to_exit": "",
+          "approx_distance_m": 0
+        }
+      ],
+
+      "bottlenecks": [],
+
+      "risks": [],
+
+      "regulation_notes": [
+        {
+          "element": "",
+          "measured": "",
+          "limit": "",
+          "reference": "",
+          "flag": ""
+        }
+      ],
+
+      "narrative": ""
+    }
+  ]
+}

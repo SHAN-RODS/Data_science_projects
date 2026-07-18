@@ -30,4 +30,17 @@ implementation schema of using any LLM model: (19th june 26)
 7. Run and test the system if it gives the scenarios or not and fix the codes wherever possible(2nd week of july)
 
 Target- finish the codes by 12th july(both backend and frontend)
- 
+
+
+## Scenario schema (pivot — whole-building scenario generator)
+
+The project is being pivoted (see `Plan.md`) from a per-violation compliance checker to a
+whole-building evacuation *scenario* generator. The output is a single structured object per
+uploaded IFC (not a flat list of violations), with >=2 variants (base case + one-exit-discounted).
+
+The machine-checked specification of that object lives in `core_backend/scenario_schema.py`
+(JSON Schema + pydantic models) once built. Field ownership: `use_type*` and the scenario
+reasoning/narrative fields are AI-produced; everything else is deterministic computation. Every
+derived value carries its source IFC GUID or a stated method, and missing data is surfaced in an
+explicit `not_assessed` list rather than being silently passed.
+

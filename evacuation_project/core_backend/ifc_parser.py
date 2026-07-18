@@ -2,6 +2,9 @@ import ifcopenshell
 import ifcopenshell.util.element as util
 import ifcopenshell.util.unit as unit_util
 import ifcopenshell.util.placement as placement_util
+import ifcopenshell.geom as geom_util
+import ifcopenshell.util.shape as shape_util
+from collections import defaultdict
 import sys
 
 def find_property(psets, keys):
@@ -54,17 +57,107 @@ def load_project_name(model):
         return project[0].Name or "No Name"
     return "No IFC project name found."
 
-def space_extract(model, scale):
-    space_extract = []
+def space_geometry(space, settings):
+    # Derive (centroid, footprint_area) from the space solid in one shape build.
+    #   centroid: bounding-box centre (x, y, z) in metres, or None
+    #   footprint_area: horizontal floor area in m^2, or None
+    # IfcOpenShell's mesher returns vertices already in metres, so no unit scaling is applied.
+    # The world-Z of aggregated spaces is corrected in space_extract using the storey elevation
+    # (some Revit exports author space geometry at local z ~ 0). Keep the shape reference alive
+    # while reading .verts/.geometry — the buffers are C++-owned and freed when it is collected.
+    try:
+        shape = geom_util.create_shape(settings, space)
+        g = shape.geometry
+        verts = g.verts
+    except Exception:
+        return None, None
+    if not verts:
+        return None, None
+    xs, ys, zs = verts[0::3], verts[1::3], verts[2::3]
+    centroid = (
+        (min(xs) + max(xs)) / 2.0,
+        (min(ys) + max(ys)) / 2.0,
+        (min(zs) + max(zs)) / 2.0,
+    )
+    try:
+        area = shape_util.get_footprint_area(g)
+    except Exception:
+        area = None
+    return centroid, area
+
+
+def resolve_storey(space):
+    # The IfcBuildingStorey a space belongs to. Spaces link to storeys either by spatial
+    # containment (IfcRelContainedInSpatialStructure) or aggregation (IfcRelAggregates); this
+    # tries both and walks up until it reaches a storey.
+    storey = util.get_container(space) or util.get_aggregate(space)
+    guard = 0
+    while storey is not None and not storey.is_a("IfcBuildingStorey") and guard < 10:
+        storey = util.get_aggregate(storey)
+        guard += 1
+    if storey is not None and storey.is_a("IfcBuildingStorey"):
+        return storey
+    return None
+
+
+def _nearest_storey(z, storey_levels):
+    # Fallback storey assignment by elevation for spaces with no containment/aggregation link.
+    if z is None or not storey_levels:
+        return None
+    return min(storey_levels, key=lambda s: abs(s["elevation_m"] - z))
+
+
+def space_extract(model, scale, settings, storey_levels):
+    results = []
     for space in model.by_type("IfcSpace"):
         psets = util.get_psets(space)
         area = find_property(psets, ["GrossFloorArea", "NetFloorArea", "Area", "FloorArea"])
-        space_extract.append({
+
+        raw, geom_area = space_geometry(space, settings)
+        if raw is None:
+            # no usable geometry — fall back to the placement origin (world metres)
+            raw = get_position(space, scale)
+
+        # Prefer an IFC-declared area; otherwise derive the floor area from geometry. Record which
+        # so downstream occupant-load estimates stay traceable to a source or a stated method.
+        if area is not None:
+            area_m2 = float(area) * (scale ** 2)
+            area_source = "ifc_property"
+        elif geom_area is not None:
+            area_m2 = geom_area
+            area_source = "geometry_footprint"
+        else:
+            area_m2 = None
+            area_source = None
+
+        storey_el = resolve_storey(space)
+        centroid = None
+        storey = None
+        if storey_el is not None:
+            elevation_m = (storey_el.Elevation or 0.0) * scale
+            storey = {"id": storey_el.GlobalId, "name": storey_el.Name or "Unnamed Storey"}
+            if raw is not None:
+                gx, gy, gz = raw
+                # correct world-Z only when the geometry sits below its floor (authored at ~0)
+                z = elevation_m + gz if gz < elevation_m - 1 else gz
+                centroid = (gx, gy, z)
+        else:
+            if raw is not None:
+                centroid = raw
+                near = _nearest_storey(raw[2], storey_levels)
+                if near is not None:
+                    storey = {"id": near["id"], "name": near["name"]}
+
+        results.append({
             "id": space.GlobalId,
-            "name": space.Name or "No Room",
-            "area": float(area) * (scale ** 2) if area is not None else None
+            "name": space.Name or "No Room",             # raw name (kept verbatim for the classifier)
+            "long_name": space.LongName or None,         # the semantically clean label in most exports
+            "area": area_m2,                             # m^2, or None
+            "area_source": area_source,                  # "ifc_property" | "geometry_footprint" | None
+            "centroid": centroid,                        # (x, y, z) world metres, or None
+            "storey": storey,                            # {"id", "name"} or None
         })
-    return space_extract
+    return results
 
 def each_corridor(model, scale):
     corridor = []
@@ -189,6 +282,39 @@ def space_boundary(model):
         })
     return space
 
+def door_space_links(model):
+    # Which spaces each door connects. Two sources, combined:
+    #   1. doors that are themselves IfcRelSpaceBoundary elements (some exports model this directly)
+    #   2. doors recovered via their hosting wall: a door fills an opening (IfcRelFillsElement) that
+    #      voids a wall (IfcRelVoidsElement); that wall's space boundaries are the rooms it connects.
+    # Real exports are patchy about (1), so (2) restores most connectivity. A shared wall is only
+    # traversable when it hosts a door -- this keeps "wall = adjacency, door = traversable" intact.
+    wall_spaces = defaultdict(set)
+    door_spaces = defaultdict(set)
+    for boundary in model.by_type("IfcRelSpaceBoundary"):
+        element = boundary.RelatedBuildingElement
+        space = boundary.RelatingSpace
+        if element is None or space is None:
+            continue
+        if element.is_a("IfcWall"):
+            wall_spaces[element.GlobalId].add(space.GlobalId)
+        elif element.is_a("IfcDoor"):
+            door_spaces[element.GlobalId].add(space.GlobalId)
+
+    for door in model.by_type("IfcDoor"):
+        spaces = set(door_spaces.get(door.GlobalId, set()))
+        for fills in (door.FillsVoids or []):
+            opening = fills.RelatingOpeningElement
+            for voids in (opening.VoidsElements or []):
+                host = voids.RelatingBuildingElement
+                if host is not None and host.is_a("IfcWall"):
+                    spaces |= wall_spaces.get(host.GlobalId, set())
+        if spaces:
+            door_spaces[door.GlobalId] = spaces
+
+    return {door_id: sorted(spaces) for door_id, spaces in door_spaces.items() if spaces}
+
+
 def connected_elements(model):
     elements = []
     for connection in model.by_type("IfcRelConnectsElements"):
@@ -218,8 +344,6 @@ def transport_elements(model, scale):
 
         if "elevator" in type_str or "lift" in type_str or "elevator" in name_lower or "lift" in name_lower:
             category = "elevator"
-        elif "escalator" in type_str or "escalator" in name_lower:
-            category = "escalator"
         elif "moving" in type_str or "travelator" in name_lower or "walkway" in name_lower:
             category = "moving_walkway"
         else:
@@ -227,7 +351,7 @@ def transport_elements(model, scale):
 
         results.append({
             "id": element.GlobalId,
-            "name": element.Name or "Unnamed Transport Element",
+            "name": element.Name or "No Transport Element",
             "category": category,
             "predefined_type": type_str,
             "is_evac_lift": possible_evacuation_lifts(element.Name, psets),
@@ -260,6 +384,7 @@ def storeys(model, scale):
         results.append({
             "id": storey.GlobalId,
             "name": storey.Name or "Unnamed Storey",
+            "elevation_m": raw_elevation * scale,                         # world Z, for matching centroids/exits
             "height_above_ground_m": (raw_elevation - entrance_elevation) * scale,
             "ground_reference_found": ground_reference_found
         })
@@ -284,15 +409,27 @@ def fire_terminals(model):
     ]
 
 
+def storey_levels(model, scale):
+    # lightweight (name, id, elevation) list used to assign a storey to spaces that lack a
+    # containment/aggregation link (see _nearest_storey)
+    return [
+        {"id": s.GlobalId, "name": s.Name or "Unnamed Storey",
+         "elevation_m": (s.Elevation or 0.0) * scale}
+        for s in model.by_type("IfcBuildingStorey")
+    ]
+
+
 def parser_summary(ifc_path):
     model = ifcopenshell.open(ifc_path)
     scale = unit_util.calculate_unit_scale(model)  # handles mm vs m unit differences between models
+    geom_settings = geom_util.settings()           # default settings; verts come back in metres
+    levels = storey_levels(model, scale)
     all_doors = doors(model, scale)
     all_transport = transport_elements(model, scale)
 
     return {
         "project": load_project_name(model),
-        "spaces": space_extract(model, scale),
+        "spaces": space_extract(model, scale, geom_settings, levels),
         "corridors": each_corridor(model, scale),
         "doors": all_doors,
         "stairs": stairs(model, scale),
@@ -304,18 +441,17 @@ def parser_summary(ifc_path):
         "smoke_alarms": smoke_alarms(model, scale),
         "fire_suppression_terminals": fire_terminals(model),
         "space_boundaries": space_boundary(model),
+        "door_space_links": door_space_links(model),
         "connected_elements": connected_elements(model),
         "elevators": [t for t in all_transport if t["category"] == "elevator"],
         "emergency_exits": [d for d in all_doors if d["is_emergency_exit"]]
     }
 if __name__ == "__main__":
+    from core_backend.sample_paths import resolve_ifc
 
-    ifc_path = sys.argv[1] if len(sys.argv) > 1 else (
-        r"C:\Users\Shannan\Desktop\Msc data science uog\term 3- msc project"
-        r"\bim residential models\ARK_NordicLCA_Housing_Concrete_As-Built_Revit-IFC4X3 original.ifc"
-    )
+    ifc_path = resolve_ifc(sys.argv)
     report = parser_summary(ifc_path)
-    
+
     print("Project Name:", report["project"])
     print("Total Spaces:", len(report["spaces"]))
     print("Total Corridors:", len(report["corridors"]))
@@ -330,3 +466,22 @@ if __name__ == "__main__":
     print("Total Smoke Alarms:", len(report["smoke_alarms"]))
     print("Total Fire Suppression Terminals:", len(report["fire_suppression_terminals"]))
     print("Total Elevators:", len(report["elevators"]))
+
+    # Phase 1 additions: LongName, centroid, storey coverage
+    spaces = report["spaces"]
+    with_long = sum(1 for s in spaces if s["long_name"])
+    with_centroid = sum(1 for s in spaces if s["centroid"])
+    with_storey = sum(1 for s in spaces if s["storey"])
+    with_area = sum(1 for s in spaces if s["area"] is not None)
+    print(f"\nSpaces with LongName: {with_long}/{len(spaces)}")
+    print(f"Spaces with centroid: {with_centroid}/{len(spaces)}")
+    print(f"Spaces with storey:   {with_storey}/{len(spaces)}")
+    print(f"Spaces with area:     {with_area}/{len(spaces)}")
+    print("\nSample spaces:")
+    for s in spaces[:8]:
+        c = s["centroid"]
+        c_str = f"({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f})" if c else "None"
+        st = s["storey"]["name"] if s["storey"] else "None"
+        area = f"{s['area']:.1f}" if s["area"] is not None else "None"
+        print(f"  long_name={s['long_name']!r:16} area={area:>6} ({s['area_source']}) "
+              f"storey={st!r:12} centroid={c_str}")

@@ -1,187 +1,287 @@
-#Gives Summary about each Violation
+"""AI stage 2 — evacuation scenario generation (the project's core contribution).
+
+The LLM composes a *whole-building* evacuation scenario (routes, bottlenecks, risks, assumptions, a
+narrative) for each variant. It is strictly grounded: it reasons over the numbers computed by the
+deterministic spine (occupant loads, exits, nearest-exit distances) and **never sources building
+facts itself**. Computation owns every figure; the LLM owns the reasoning and prose that sit next to
+those figures.
+
+Two variants are always produced (a single scenario is an existence proof, not a resilience test):
+  * SCN-BASE          — all final exits available.
+  * SCN-EXIT-BLOCKED  — the busiest final exit is discounted; occupants are re-routed. The distances
+                        it reasons over are re-computed deterministically (egress.discount_exit), not
+                        estimated by the model.
+
+The assembled object follows the schema in ``scenario_schema.py``; ``validation.validate`` fills in
+the ``validation`` block (schema check, invariants, number fact-check).
+"""
 
 import os
-import uuid
-from dotenv import load_dotenv
-from langchain_anthropic import ChatAnthropic
-from langchain_mistralai import ChatMistralAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-import sys
-from core_backend.ifc_parser import parser_summary
-from core_backend.uk_regulation_checking import check_all_rules
+from collections import Counter, defaultdict
+from datetime import datetime
+from typing import List
 
-load_dotenv()  
+from pydantic import BaseModel, Field
 
-#Checks For Anthropic first and if it's missing fallbacks to mistral
-def select_llm():
-    if os.getenv("ANTHROPIC_API_KEY"):
-        model = os.getenv("ANTHROPIC_MODEL")
-        temperature = float(os.getenv("ANTHROPIC_TEMPERATURE"))
-        return (
-            ChatAnthropic(
-                model_name=model,
-                temperature=temperature,
-                max_tokens=400
-            ),
-            f"{model} (Anthropic API)"
-        )
-    mistral_key = os.getenv("MISTRAL_API_KEY") or os.getenv("mistral")
-    if mistral_key:
-        model = os.getenv("MISTRAL_MODEL")
-        temperature = float(os.getenv("MISTRAL_TEMPERATURE"))
-        return (
-            ChatMistralAI(
-                model=model,
-                api_key=mistral_key,
-                temperature=temperature,
-                max_tokens=400
-            ),
-            f"{model} (Mistral AI)"
-        )
+from core_backend.llm import select_llm
+from core_backend.egress import ground_spaces, discount_exit
+
+DISTANCE_METHOD = "centroid straight-line, summed along the traversal path (approx — not compliance-grade)"
 
 
-llm, model_label = select_llm()
+# --- what the LLM produces per variant (the AI-owned fields) ------------------------------------
+class Route(BaseModel):
+    from_area: str = Field(description="where occupants start (e.g. a storey or space name)")
+    via: str = Field(default="", description="circulation/stair route taken")
+    to_exit: str = Field(description="the exit id or name they leave by")
+    note: str = Field(default="", description="short note, e.g. approx distance or a caveat")
 
-prompt_template = PromptTemplate(
-    input_variables=[
-        "issue", "element_type", "element_name", "element_id", "attribute",
-        "reg_id", "reg_name", "reg_description", "reg_reference", "severity",
-        "total_spaces", "total_doors", "total_stairs", "total_windows", "total_exits"
-    ],
-    template="""This is an NLP-assisted evacuation scenario suggestion residential building model 
-check against the regulation documents.
 
-After checking the regulations, it has found out the following violations:
+class ScenarioContent(BaseModel):
+    title: str
+    assumptions: List[str]
+    occupant_distribution: List[str] = Field(description="occupants per storey/area, e.g. 'Floor_02: 8'")
+    routes: List[Route]
+    bottlenecks: List[str]
+    risks: List[str]
+    narrative: str
 
-VIOLATION:
-{issue}
 
-IFC BUILDING ELEMENT:
-- Type      : {element_type}
-- Name      : {element_name}
-- IFC GUID  : {element_id}
-- Attribute : {attribute}
+# --- deterministic facts fed to the model -------------------------------------------------------
+def _storey_rollup(grounded):
+    """Aggregate occupant load + travel distance per storey from the grounded spaces."""
+    rollup = defaultdict(lambda: {"occupants": 0, "spaces": 0, "max_dist": 0.0, "unreachable": 0})
+    for s in grounded["spaces"]:
+        name = (s["storey"] or {}).get("name", "Unknown")
+        row = rollup[name]
+        row["spaces"] += 1
+        if s["occupant_load"]:
+            row["occupants"] += s["occupant_load"]
+        if s["reachable"] and s["approx_travel_distance_m"]:
+            row["max_dist"] = max(row["max_dist"], s["approx_travel_distance_m"])
+        if not s["reachable"]:
+            row["unreachable"] += 1
+    return rollup
 
-REGULATION:
-- ID          : {reg_id}
-- Name        : {reg_name}
-- Description : {reg_description}
-- Reference   : {reg_reference}
-- Severity    : {severity}
 
-BUILDING CONTEXT:
-- Total spaces   : {total_spaces}
-- Total doors    : {total_doors}
-- Total stairs   : {total_stairs}
-- Total windows  : {total_windows}
-- Emergency exits: {total_exits}
+def _facts_block(building, grounded, conditions, reg_summary):
+    """Compact, grounded facts string for the LLM. Only these numbers may be used."""
+    lines = [
+        f"Building: {building['project']} | storeys: {building['storeys']} | "
+        f"total occupant load: {building['total_occupant_load']} | "
+        f"total floor area: {building['total_floor_area_m2']} m2",
+        f"Occupancy state: {conditions['occupancy_state']} | occupants to evacuate: {conditions['occupants_total']}",
+        "",
+        "Final (ground-level) exits available:",
+    ]
+    for e in conditions["exits_available"]:
+        lines.append(f"  - {e['id']} (name={e['name']}, width_m={e['width_m']})")
+    if conditions["exits_discounted"]:
+        lines.append(f"Exit DISCOUNTED for this scenario: {', '.join(conditions['exits_discounted'])}")
+    lines.append("")
+    lines.append("Per-storey rollup (occupants / spaces / max approx travel distance m / unreachable):")
+    for storey, row in _storey_rollup(grounded).items():
+        lines.append(f"  - {storey}: occupants={row['occupants']} spaces={row['spaces']} "
+                     f"max_travel_m={round(row['max_dist'], 1)} unreachable={row['unreachable']}")
+    # a few longest-travel spaces (the pinch points worth naming)
+    reachable = [s for s in grounded["spaces"] if s["reachable"] and s["approx_travel_distance_m"]]
+    longest = sorted(reachable, key=lambda s: -s["approx_travel_distance_m"])[:6]
+    lines.append("")
+    lines.append("Longest approx travel distances (space -> nearest exit):")
+    for s in longest:
+        storey = (s["storey"] or {}).get("name")
+        lines.append(f"  - {s['use_type']} on {storey}: {s['approx_travel_distance_m']} m "
+                     f"to exit {s['nearest_exit']}")
+    if grounded["not_assessed"]:
+        lines.append("")
+        lines.append(f"{len(grounded['not_assessed'])} space(s) could not be fully assessed "
+                     f"(missing data / no path) — do not assume they are safe.")
+    lines.append("")
+    lines.append(f"Regulation reference (measured vs limit, non-verdict): {reg_summary}")
+    return "\n".join(lines)
 
-Write exactly 3 sentences as a professional UK fire safety explanation:
-Sentence 1 — Which regulation is violated, the exact non-compliance, \
-and the fire safety risk for occupants.
-Sentence 2 — How this affects people evacuating from this residential building.
-Sentence 3 — The remediation required, referencing the regulation reference \
-and the specific measurement or requirement to be met.
 
-Write only the 3 sentences. No introduction, no bullet points, no sign-off."""
+_SYSTEM = (
+    "You are a fire-safety engineer preparing an evacuation SCENARIO (the input description for egress "
+    "analysis), not a simulation and not a compliance verdict. You are given computed building facts. "
+    "Reason ONLY over those numbers — never invent areas, counts, distances, or exits. Refer to exits by "
+    "the ids given. Every number you write MUST appear in the supplied facts. Describe how occupants "
+    "leave under the stated conditions: their distribution, the routes (from area -> via -> exit), the "
+    "bottlenecks and risks, your assumptions, and a short plain-English narrative. If some spaces were "
+    "not assessed, treat them as an open risk, not as safe."
 )
 
-output_parser = StrOutputParser()
-chain = prompt_template | llm | output_parser
+
+def _generate_variant(llm, building, grounded, conditions, reg_summary):
+    facts = _facts_block(building, grounded, conditions, reg_summary)
+    prompt = f"{_SYSTEM}\n\n=== COMPUTED FACTS ===\n{facts}\n\n=== TASK ===\nProduce the scenario."
+    structured = llm.with_structured_output(ScenarioContent)
+    content = structured.invoke(prompt)
+    return content
 
 
-def generate_scenarios(flags, summary):
-    return [building_scenarios(flag, summary) for flag in flags]
-
-
-def building_scenarios(flag, summary):
-    rule = flag["rule"]
-    requires_manual_review = flag.get("requires_manual_review", False)
-
-    if requires_manual_review:
-        explanation = (
-            f"{rule['description']} This cannot be confirmed automatically "
-            f"from the IFC model — a qualified expert should verify this "
-            f"against {rule['doc_reference']}."
-        )
-    else:
-        explanation = run_chain(flag, summary)
+# --- deterministic assembly of the whole-building object ----------------------------------------
+def _building_block(summary, grounded, jurisdiction):
+    occupiable = [s for s in grounded["spaces"] if s["area_m2"]]
+    total_area = round(sum(s["area_m2"] for s in occupiable), 1)
+    total_occ = sum(s["occupant_load"] for s in grounded["spaces"] if s["occupant_load"])
     return {
-        "id": "SCN-" + str(uuid.uuid4())[:8].upper(),
-
-        "description": flag["issue"],
-
-        "ifc_element_type": flag["element_type"],
-        "ifc_element_name": flag["element_name"],
-        "ifc_element_guid": flag["element_id"],
-        "ifc_attribute":    flag["attribute"],
-
-        "regulation_id":          rule["unique_id"],
-        "regulation_name":        rule["regulation_name"],
-        "regulation_description": rule["description"],
-        "regulation_reference":   rule["doc_reference"],
-        "severity":               rule["severity_level"],
-
-        "requires_manual_review": requires_manual_review,
-        "ai_explanation": explanation,
-        "selected": True
+        "project": summary["project"],
+        "source_ifc": summary.get("source_ifc"),
+        "jurisdiction": jurisdiction,
+        "occupancy_type": "residential (dwellings)",
+        "storeys": len(summary.get("storeys", [])),
+        "total_floor_area_m2": total_area,
+        "total_occupant_load": total_occ,
     }
 
-def run_chain(flag, summary):
-    rule = flag["rule"]
-    chain_input = {
-        "issue":           flag["issue"],
-        "element_type":    flag["element_type"],
-        "element_name":    flag["element_name"],
-        "element_id":      flag["element_id"],
-        "attribute":       flag["attribute"],
-        "reg_id":          rule["unique_id"],
-        "reg_name":        rule["regulation_name"],
-        "reg_description": rule["description"],
-        "reg_reference":   rule["doc_reference"],
-        "severity":        rule["severity_level"],
 
-        "total_spaces":  len(summary.get("spaces", [])),
-        "total_doors":   len(summary.get("doors", [])),
-        "total_stairs":  len(summary.get("stairs", [])),
-        "total_windows": len(summary.get("windows", [])),
-        "total_exits":   len(summary.get("emergency_exits",[]))
+def _spaces_block(grounded, classified):
+    conf = {c["guid"]: c for c in classified}
+    out = []
+    for s in grounded["spaces"]:
+        c = conf.get(s["guid"], {})
+        out.append({
+            "guid": s["guid"],
+            "name": s["name"],
+            "use_type": s["use_type"],
+            "use_type_confidence": c.get("use_type_confidence"),
+            "use_type_source": c.get("use_type_source"),
+            "storey": (s["storey"] or {}).get("name"),
+            "area_m2": s["area_m2"],
+            "occupant_load": s["occupant_load"],
+            "occupant_basis": s["occupant_basis"],
+            "nearest_exit": s["nearest_exit"],
+            "approx_travel_distance_m": s["approx_travel_distance_m"],
+            "reachable": s["reachable"],
+        })
+    return out
+
+
+def _circulation_block(summary, classified):
+    stair_ids = {c["guid"] for c in classified if c["use_type"] == "stair"}
+    out = []
+    for stair in summary.get("stairs", []):
+        out.append({"id": stair["id"], "name": stair.get("name"), "type": "internal_stair",
+                    "width_m": stair.get("width")})
+    return out
+
+
+def _exits_block(final_exits):
+    return [{"id": e["id"], "name": e["name"], "type": "final_exit", "width_m": e["width_m"]}
+            for e in final_exits]
+
+
+def _conditions(building, final_exits, discounted_ids, occupancy_state):
+    available = [e for e in final_exits if e["id"] not in discounted_ids]
+    return {
+        "exits_available": available,
+        "exits_discounted": list(discounted_ids),
+        "occupancy_state": occupancy_state,
+        "occupants_total": building["total_occupant_load"],
     }
 
-    try:
-        result = chain.invoke(chain_input)
-        return result.strip()
-    except Exception as e:
-        print(f"LLM error: {e}")
-        return (
-            f"AI explanation unavailable for this scenario. "
-            f"Regulation {rule['unique_id']} ({rule['regulation_name']}) "
-            f"was violated as described above. "
-            f"See {rule['doc_reference']} for guidance."
-        )
 
-if __name__ == "__main__":
+def generate_scenario_object(summary, classified, jurisdiction, reg_result, llm=None, model_label=None):
+    """Assemble the whole-building scenario object with >=2 grounded, LLM-reasoned variants."""
+    if llm is None:
+        llm, model_label = select_llm(max_tokens=4096)
 
-    ifc_path = sys.argv[1] if len(sys.argv) > 1 else (
-        r"C:\Users\Shannan\Desktop\Msc data science uog\term 3- msc project"
-        r"\bim residential models\ARK_NordicLCA_Housing_Concrete_As-Built_Revit-IFC4X3 original.ifc"
-    )
+    base_grounded = ground_spaces(summary, classified)
+    building = _building_block(summary, base_grounded, jurisdiction)
+
+    reg_notes = reg_result.get("regulation_notes", [])
+    flag_counts = Counter(n["flag"] for n in reg_notes)
+    reg_summary = (f"{len(reg_notes)} measured notes ({dict(flag_counts)}); "
+                   f"{len(reg_result.get('not_assessed', []))} not_assessed")
+
+    scenarios = []
+
+    # --- SCN-BASE: all exits available -----------------------------------------------------------
+    base_conditions = _conditions(building, base_grounded["final_exits"], set(), "night")
+    base_content = _generate_variant(llm, building, base_grounded, base_conditions, reg_summary)
+    scenarios.append(_assemble_scenario("SCN-BASE", "base_case", base_conditions,
+                                        base_content, reg_notes))
+
+    # --- SCN-EXIT-BLOCKED: discount the busiest final exit ---------------------------------------
+    usage = Counter(s["nearest_exit"] for s in base_grounded["spaces"] if s["nearest_exit"])
+    if usage:
+        blocked_id = usage.most_common(1)[0][0]
+        blocked_grounded = discount_exit(summary, classified, blocked_id)
+        blocked_conditions = _conditions(building, base_grounded["final_exits"],
+                                         {blocked_id}, "night")
+        blocked_content = _generate_variant(llm, building, blocked_grounded,
+                                            blocked_conditions, reg_summary)
+        scenarios.append(_assemble_scenario("SCN-EXIT-BLOCKED", "one_exit_discounted",
+                                            blocked_conditions, blocked_content, reg_notes))
+
+    return {
+        "schema_version": "1.0",
+        "provenance": {
+            "generated_by_model": model_label,
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "occupancy_factor_source": "indicative area factors / dwelling room-count (approx)",
+            "distance_method": DISTANCE_METHOD,
+            "llm_grounded": True,
+            "llm_temperature": os.getenv("ANTHROPIC_TEMPERATURE", "0"),
+        },
+        "building": building,
+        "exits": _exits_block(base_grounded["final_exits"]),
+        "circulation": _circulation_block(summary, classified),
+        "spaces": _spaces_block(base_grounded, classified),
+        "scenarios": scenarios,
+        "validation": {},   # filled by validation.validate()
+        "not_assessed": base_grounded["not_assessed"] + reg_result.get("not_assessed", []),
+    }
+
+
+def _assemble_scenario(scenario_id, scenario_type, conditions, content, reg_notes):
+    return {
+        "id": scenario_id,
+        "type": scenario_type,
+        "title": content.title,
+        "conditions": {
+            "exits_available": [e["id"] for e in conditions["exits_available"]],
+            "exits_discounted": conditions["exits_discounted"],
+            "occupancy_state": conditions["occupancy_state"],
+            "occupants_total": conditions["occupants_total"],
+        },
+        "assumptions": content.assumptions,
+        "occupant_distribution": content.occupant_distribution,
+        "routes": [r.model_dump() for r in content.routes],
+        "bottlenecks": content.bottlenecks,
+        "risks": content.risks,
+        "regulation_notes": reg_notes,
+        "narrative": content.narrative,
+    }
+
+
+def build_full_scenario(ifc_path, jurisdiction="england", use_llm=True):
+    """End-to-end: parse -> classify -> annotate -> generate the whole-building scenario object."""
+    from core_backend.ifc_parser import parser_summary
+    from core_backend.space_classifier import classify_spaces
+    from core_backend.uk_regulation_checking import annotate
 
     summary = parser_summary(ifc_path)
-    flags = check_all_rules(summary, jurisdiction="england")
-    print(f"{len(flags)} flags found")
-    if not flags:
-        print("No flags found — the IFC file may be compliant or the attributes are missing")
-    else:
-        print("\nTesting the chain with the first flag only. "
-              "This keeps API cost low during testing.\n")
+    summary["source_ifc"] = os.path.basename(ifc_path)
+    classified = classify_spaces(summary["spaces"], use_llm=use_llm)
+    reg_result = annotate(summary, jurisdiction=jurisdiction)
+    return generate_scenario_object(summary, classified, jurisdiction, reg_result)
 
-        scenario = building_scenarios(flags[0], summary)
-        print("The evacuation scenarios with AI explanation has been built successfully:")
-        print(f"ID : {scenario['id']}")
-        print(f"Regulation : {scenario['regulation_id']} — {scenario['regulation_name']}")
-        print(f"IFC Element : {scenario['ifc_element_type']} — {scenario['ifc_element_name']}")
-        print(f"Attribute : {scenario['ifc_attribute']}")
-        print(f"Severity : {scenario['severity']}")
-        print(f"\nAI Explanation:\n  {scenario['ai_explanation']}")
+
+if __name__ == "__main__":
+    import sys
+    import json
+    from core_backend.sample_paths import resolve_ifc
+
+    args = [a for a in sys.argv if not a.startswith("--")]
+    obj = build_full_scenario(resolve_ifc(args), jurisdiction="england")
+    print(f"Generated scenario object with {len(obj['scenarios'])} scenarios, "
+          f"{len(obj['spaces'])} spaces, {len(obj['exits'])} exits, "
+          f"{len(obj['not_assessed'])} not_assessed.")
+    for scn in obj["scenarios"]:
+        print(f"\n=== {scn['id']} ({scn['type']}) — {scn['title']} ===")
+        print(f"  conditions: {scn['conditions']}")
+        print(f"  routes: {len(scn['routes'])} | bottlenecks: {len(scn['bottlenecks'])} "
+              f"| risks: {len(scn['risks'])}")
+        print(f"  narrative: {scn['narrative'][:280]}...")
