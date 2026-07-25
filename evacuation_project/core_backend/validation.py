@@ -1,14 +1,3 @@
-"""Validation & fact-check for the generated scenario object.
-
-Three layers of trust, all computation (no AI):
-  1. **JSON-Schema** validity against ``scenario_schema.SCENARIO_SCHEMA``.
-  2. **Invariants** — >=2 scenarios; every space reaches an exit or is flagged not_assessed; occupant
-     totals reconcile; occupants within summed exit capacity; travel distances non-negative.
-  3. **Number fact-check** — every figure a narrative uses must trace to the structured record, so the
-     LLM cannot slip an invented safety number into the prose. Ungrounded numbers are quarantined.
-
-``validate(obj)`` fills ``obj["validation"]`` and returns the object.
-"""
 
 import re
 from collections import defaultdict
@@ -17,14 +6,12 @@ from jsonschema import Draft202012Validator
 
 from core_backend.scenario_schema import SCENARIO_SCHEMA
 
-# Indicative exit capacity: ~5 mm of clear exit width per person -> 200 persons per metre. Approx.
 EXIT_CAPACITY_PERSONS_PER_M = 200
 
 _NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 
 
 def _allowed_floats(obj):
-    """Numbers the narratives may use, drawn from the structured (computed) record."""
     allowed = set()
 
     def add(value):
@@ -40,23 +27,21 @@ def _allowed_floats(obj):
     for s in obj["spaces"]:
         add(s.get("area_m2"))
         add(s.get("occupant_load"))
-        add(s.get("approx_travel_distance_m"))
+        add(s.get("travel_distance_m"))
     for scn in obj["scenarios"]:
         c = scn.get("conditions", {})
         add(c.get("occupants_total"))
         add(len(c.get("exits_available", [])))
         add(len(c.get("exits_discounted", [])))
 
-    # per-storey occupant sums and max travel distances -- these appear in the grounded facts the
-    # LLM was given (the storey rollup), so a narrative that quotes them is grounded, not inventing
     by_storey_occ = defaultdict(int)
     by_storey_dist = defaultdict(float)
     for s in obj["spaces"]:
         storey = s.get("storey")
         if s.get("occupant_load"):
             by_storey_occ[storey] += s["occupant_load"]
-        if s.get("approx_travel_distance_m"):
-            by_storey_dist[storey] = max(by_storey_dist[storey], s["approx_travel_distance_m"])
+        if s.get("travel_distance_m"):
+            by_storey_dist[storey] = max(by_storey_dist[storey], s["travel_distance_m"])
     for value in by_storey_occ.values():
         add(value)
     for value in by_storey_dist.values():
@@ -65,11 +50,10 @@ def _allowed_floats(obj):
 
 
 def _is_grounded(value, allowed):
-    # small integer counts (storeys, exits, "two routes") are structural, not safety figures
     if value <= 12 and value == int(value):
         return True
     for a in allowed:
-        if abs(value - a) <= max(0.05 * abs(a), 0.5):  # tolerance for rounding / units
+        if abs(value - a) <= max(0.05 * abs(a), 0.5):  
             return True
     return False
 
@@ -83,7 +67,6 @@ def _scenario_text(scn, id_tokens):
     for r in scn.get("routes", []) or []:
         parts += [r.get("from_area", ""), r.get("via", ""), r.get("to_exit", ""), r.get("note", "")]
     text = " ".join(str(p) for p in parts)
-    # strip exit ids / space guids first so their embedded digits aren't read as safety numbers
     for token in id_tokens:
         if token:
             text = text.replace(token, " ")
@@ -105,17 +88,13 @@ def number_factcheck(obj):
                 ungrounded.append({"scenario": scn["id"], "value": token})
     return ungrounded
 
-
 def validate(obj):
-    """Validate the object; fill and return ``obj["validation"]``."""
     validator = Draft202012Validator(SCENARIO_SCHEMA)
     schema_errors = [f"{'/'.join(str(p) for p in e.path)}: {e.message}"
                      for e in validator.iter_errors(obj)]
 
     spaces = obj["spaces"]
     flagged = {na.get("element") for na in obj.get("not_assessed", [])}
-    # occupiable = carries occupants, or its use is still unresolved (None). Non-occupiable spaces
-    # (plant/overlays) being unreachable is not a safety gap, so the invariant excludes them.
     occupiable = [s for s in spaces if s.get("occupant_load") is None or s.get("occupant_load", 0) > 0]
     every_space_ok = all(s["reachable"] or s["guid"] in flagged for s in occupiable)
     two_scenarios = len(obj["scenarios"]) >= 2
@@ -127,7 +106,7 @@ def validate(obj):
     total_occ = obj["building"]["total_occupant_load"]
     within_capacity = (total_occ <= capacity) if capacity > 0 else None
 
-    dist_ok = all(s.get("approx_travel_distance_m") is None or s["approx_travel_distance_m"] >= 0
+    dist_ok = all(s.get("travel_distance_m") is None or s["travel_distance_m"] >= 0
                   for s in spaces)
 
     ungrounded = number_factcheck(obj)
@@ -155,7 +134,6 @@ if __name__ == "__main__":
     import json
     import os
 
-    # Validate a saved object if a .json path is given (free); otherwise run the full pipeline.
     json_args = [a for a in sys.argv[1:] if a.endswith(".json")]
     if json_args:
         with open(json_args[0], "r", encoding="utf-8") as f:
@@ -172,11 +150,11 @@ if __name__ == "__main__":
     obj = validate(obj)
     v = obj["validation"]
     print("\nValidation report:")
-    print(f"  schema_valid: {v['schema_valid']}  errors: {v['schema_errors'][:3]}")
+    print(f"schema_valid: {v['schema_valid']}  errors: {v['schema_errors'][:3]}")
     for name, result in v["invariants_checked"].items():
-        print(f"  {name}: {result}")
-    print(f"  exit_capacity_persons: {v['exit_capacity_persons']}  "
+        print(f"{name}: {result}")
+    print(f"exit_capacity_persons: {v['exit_capacity_persons']}  "
           f"(total occupants: {obj['building']['total_occupant_load']})")
-    print(f"  number_factcheck: {v['number_factcheck']}  "
+    print(f"number_factcheck: {v['number_factcheck']}  "
           f"ungrounded: {v['ungrounded_numbers'][:8]}")
-    print(f"  not_assessed_count: {v['not_assessed_count']}")
+    print(f"not_assessed_count: {v['not_assessed_count']}")

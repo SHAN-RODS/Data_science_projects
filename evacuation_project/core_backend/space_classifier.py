@@ -1,15 +1,5 @@
-"""Space-use classification.
-
-Maps each IfcSpace onto a controlled vocabulary of use-types. This is the AI-1 stage of the
-pipeline, but AI is used only where a formula cannot decide: the deterministic keyword dictionary
-below resolves the clean, common labels (which in most exports live in ``IfcSpace.LongName``), and
-only the spaces it cannot confidently resolve are sent to the LLM (see ``classify_llm``, added in a
-later phase). Every result carries the source space GUID so downstream stages stay traceable.
-
-The dictionary handles multilingual tokens (English + observed Nordic/Finnish/German) and the
-Finnish apartment notation (e.g. ``3H+K+WC+KPH`` = 3 rooms + kitchen + WC + bathroom) via a
-dwelling-unit regex that runs before the room-level keywords.
-"""
+#It will map the Ifspace onto a controlled vocabulary having use-types. LLM is used only here if the deterministic keyword dictionary cannot 
+#resolve the labels. so these are sent to the LLM to give the results
 
 import re
 import unicodedata
@@ -17,19 +7,13 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
-# Controlled vocabulary. "unknown" is the residue the LLM pass resolves; occupancy treats it and
-# the non-occupiable types (circulation/stair/plant/parking/storage) conservatively.
 USE_TYPES = [
     "bedroom", "living", "kitchen", "kitchen_living", "dining", "dwelling",
     "circulation", "stair", "sanitary", "sauna", "storage", "plant",
     "parking", "communal_amenity", "commercial", "measurement_zone", "unknown",
 ]
 
-# Keyword groups evaluated in this priority order (first hit wins). Ordering resolves overlaps:
-# measurement zones first (they overlap real rooms and must not count as occupiable); then
-# stair/sauna/sanitary before generic rooms; storage ("STORE COMMON") before communal ("COMMUNAL").
 KEYWORD_GROUPS = [
-    # BIM analysis overlays, not egress spaces — excluded from occupant load, never "not_assessed".
     ("measurement_zone", ["gfa", "gross floor", "netarea", "net area", "heated netarea",
                           "volume", "bruttoareal", "floor area"]),
     ("stair", ["staircase", "stair", "stairwell", "trapperom", "trapp", "porras"]),
@@ -52,16 +36,44 @@ KEYWORD_GROUPS = [
                      "aula", "kaytava", "hall"]),
 ]
 
-# Confidence assigned to a deterministic match (the LLM pass supplies its own for "unknown").
-_KEYWORD_CONFIDENCE = 0.9
-_DWELLING_CONFIDENCE = 0.75
+KEYWORD_CONFIDENCE = 0.9
+DWELLING_CONFIDENCE = 0.75
+CODE_CONFIDENCE = 0.85
 
-# Finnish dwelling-unit notation: a room count followed by 'h' (huonetta), e.g. "3h+k+wc".
-_DWELLING_RE = re.compile(r"\b\d+\s*h\b")
+DWELLING_RE = re.compile(r"\b\d+\s*h\b")
+
+OCCUPANCY_CODE_PREFIXES = [
+    ("0121-11-00","living"),            
+    ("0121-12","sanitary"),          
+    ("0121-64","kitchen"),
+    ("0121-73","sanitary"),          
+    ("0121-74","sauna"),
+    ("0121-83","circulation"),       
+    ("0121-92", "stair"),             
+    ("0121-99", "plant"),             
+    ("0121-94", "plant"),             
+    ("0121-96", "plant"),             
+    ("0121-52", "storage"),
+    ("0121-71", "storage"),           
+    ("0121-72", "communal_amenity"),  
+    ("0121-55", "parking"),
+    ("0121-47", "communal_amenity"),  
+    ("0121-77", "communal_amenity"),  
+    ("0121-22", "commercial"),        
+    ("0121-11", "living"),            
+]
+
+def classify_code(occupancy_code):
+    if not occupancy_code:
+        return None, None
+    code = str(occupancy_code).strip()
+    for prefix, use_type in OCCUPANCY_CODE_PREFIXES:
+        if code.startswith(prefix):
+            return use_type,CODE_CONFIDENCE
+    return None, None
 
 
 def normalize(*parts):
-    """Lowercase, strip accents/mojibake, and split separators (``/ + : -``) into spaces."""
     text = " ".join(p for p in parts if p)
     text = unicodedata.normalize("NFKD", text)
     text = "".join(c for c in text if not unicodedata.combining(c))
@@ -69,28 +81,25 @@ def normalize(*parts):
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
-
 def classify_name(long_name, name):
-    """Classify a single (long_name, name) pair with the dictionary.
-
-    Returns (use_type, confidence, source). ``source`` is "dictionary" for a hit, else "none".
-    """
     text = normalize(long_name, name)
     if not text:
         return "unknown", 0.0, "none"
-    # dwelling-unit notation takes precedence over the room keywords it contains (wc, k, ...)
-    if _DWELLING_RE.search(text):
-        return "dwelling", _DWELLING_CONFIDENCE, "dictionary"
+    if DWELLING_RE.search(text):
+        return "dwelling", DWELLING_CONFIDENCE, "dictionary"
     for use_type, keywords in KEYWORD_GROUPS:
         for kw in keywords:
             if kw in text:
-                return use_type, _KEYWORD_CONFIDENCE, "dictionary"
+                return use_type, KEYWORD_CONFIDENCE, "dictionary"
     return "unknown", 0.0, "none"
 
 
 def classify_dictionary(space):
-    """Dictionary classification for one parser space dict. Carries the source GUID."""
     use_type, confidence, source = classify_name(space.get("long_name"), space.get("name"))
+    if use_type == "unknown":
+        code_type, code_conf = classify_code(space.get("occupancy_code"))
+        if code_type is not None:
+            use_type, confidence, source = code_type, code_conf, "occupancy_code"
     return {
         "guid": space["id"],
         "name": space.get("name"),
@@ -101,19 +110,12 @@ def classify_dictionary(space):
     }
 
 
-# --- AI stage 1: LLM classification of the dictionary's "unknown" residue -----------------------
-#
-# The LLM is used only where a formula (the dictionary) cannot decide: messy, ambiguous, or
-# multilingual names. It is grounded (given only name/long_name/area/storey), constrained to the
-# controlled vocabulary, run at temperature 0, and cached by normalised name so repeated names cost
-# a single call. The output is validated against USE_TYPES; anything off-list becomes "unknown".
+LLM_USE_TYPES = ", ".join(u for u in USE_TYPES if u != "unknown")
 
-_LLM_USE_TYPES = ", ".join(u for u in USE_TYPES if u != "unknown")
-
-_LLM_INSTRUCTIONS = (
+LLM_INSTRUCTIONS = (
     "You classify spaces from a building's IFC model into a controlled vocabulary of use-types, "
     "for a fire-evacuation analysis. For each space choose the single best use_type from this list:\n"
-    f"  {_LLM_USE_TYPES}, unknown\n"
+    f"  {LLM_USE_TYPES}, unknown\n"
     "Guidance: 'measurement_zone' is a BIM area/volume overlay, not a real room; 'dwelling' is a "
     "whole apartment; 'circulation' covers corridors/lobbies/landings; 'plant' covers shafts, risers "
     "and technical rooms. Base your choice ONLY on the provided name, long_name, area and storey — do "
@@ -121,19 +123,17 @@ _LLM_INSTRUCTIONS = (
     "Return one classification per space, using the given index."
 )
 
-
 class SpaceClassification(BaseModel):
     index: int = Field(description="index of the space in the provided list")
     use_type: str = Field(description="one use-type from the allowed vocabulary")
     confidence: float = Field(description="confidence between 0 and 1", ge=0, le=1)
-
 
 class SpaceClassificationList(BaseModel):
     classifications: List[SpaceClassification]
 
 
 def _llm_prompt(items):
-    lines = [_LLM_INSTRUCTIONS, "", "Spaces to classify:"]
+    lines = [LLM_INSTRUCTIONS, "", "Spaces to classify:"]
     for index, (_, sample) in enumerate(items):
         area = sample.get("area")
         storey = (sample.get("storey") or {}).get("name")
@@ -145,15 +145,9 @@ def _llm_prompt(items):
 
 
 def classify_llm(unresolved, llm=None):
-    """Classify the dictionary's unresolved spaces with the LLM.
-
-    ``unresolved`` is a list of parser space dicts. Returns a dict keyed by normalised name
-    (``normalize(long_name, name)``) -> ``{use_type, confidence}``. Empty on failure or no input.
-    """
     if not unresolved:
         return {}
 
-    # dedup by normalised name so repeated names (e.g. many "ROOM"s) cost one classification
     distinct = {}
     for space in unresolved:
         key = normalize(space.get("long_name"), space.get("name"))
@@ -182,10 +176,6 @@ def classify_llm(unresolved, llm=None):
 
 
 def classify_spaces(spaces, use_llm=True, llm=None):
-    """Classify all spaces: dictionary first, LLM for the "unknown" residue.
-
-    Set ``use_llm=False`` for a deterministic, API-free pass (used by the offline eval).
-    """
     results = [classify_dictionary(s) for s in spaces]
     if not use_llm:
         return results
@@ -210,7 +200,6 @@ if __name__ == "__main__":
     from core_backend.ifc_parser import parser_summary
     from core_backend.sample_paths import resolve_ifc
 
-    # dictionary-only by default (no API cost); pass --llm to also run the LLM on the residue
     use_llm = "--llm" in sys.argv
     args = [a for a in sys.argv if not a.startswith("--")]
     summary = parser_summary(resolve_ifc(args))

@@ -1,10 +1,4 @@
-"""JSON Schema (draft 2020-12) for the whole-building evacuation scenario object.
-
-This is the machine-checked contract for the pipeline's output (see Plan.md section 6). It is the
-single source of truth for the object's shape; ``validation.validate`` checks a generated object
-against it. Leaf types stay lenient (nulls allowed) because real IFC data is patchy — the point of
-the object is to carry that patchiness explicitly (via ``not_assessed``), not to reject it.
-"""
+#JSON Schema for the whole-building evacuation scenarios.
 
 SCENARIO_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -69,14 +63,16 @@ SCENARIO_SCHEMA = {
                     "occupant_load": {"type": ["integer", "null"], "minimum": 0},
                     "occupant_basis": {"type": ["string", "null"]},
                     "nearest_exit": {"type": ["string", "null"]},
-                    "approx_travel_distance_m": {"type": ["number", "null"], "minimum": 0},
+                    "travel_distance_m": {"type": ["number", "null"], "minimum": 0},
+                    "travel_distance_method": {"type": ["string", "null"]},
+                    "most_remote_point": {"type": ["array", "null"]},
                     "reachable": {"type": "boolean"},
                 },
             },
         },
         "scenarios": {
             "type": "array",
-            "minItems": 2,   # base + one-exit-discounted — a single scenario is not a resilience test
+            "minItems": 2,   
             "items": {
                 "type": "object",
                 "required": ["id", "type", "conditions", "narrative"],
@@ -103,7 +99,6 @@ SCENARIO_SCHEMA = {
                 },
             },
         },
-        # building-level regulation reference (non-verdict): per-regulation summary + flagged exceptions
         "regulation_check": {
             "type": "object",
             "properties": {

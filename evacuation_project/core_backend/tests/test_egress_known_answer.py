@@ -34,7 +34,9 @@ def test_rectangular_room_straight_line():
 
     assert a["reachable"] is True
     assert a["nearest_exit"] == "E"
-    assert abs(a["approx_travel_distance_m"] - 5.0) < 1e-6  # 3-4-5 triangle
+    # no footprint on these hand-built spaces -> engine falls back to the centroid BFS
+    assert a["travel_distance_method"] == "fallback_centroid"
+    assert abs(a["travel_distance_m"] - 5.0) < 1e-6  # 3-4-5 triangle
 
 
 def test_l_corridor_exceeds_euclidean():
@@ -57,8 +59,8 @@ def test_l_corridor_exceeds_euclidean():
     euclidean = math.dist((0.0, 0.0, 0.0), (10.0, 10.0, 0.0))  # ~14.14
 
     assert a["reachable"] is True
-    assert abs(a["approx_travel_distance_m"] - 20.0) < 1e-6      # 10 (A->B) + 10 (B->exit)
-    assert a["approx_travel_distance_m"] > euclidean            # the path bends past straight-line
+    assert abs(a["travel_distance_m"] - 20.0) < 1e-6      # 10 (A->B) + 10 (B->exit)
+    assert a["travel_distance_m"] > euclidean            # the path bends past straight-line
 
 
 def test_unreachable_space_is_flagged():

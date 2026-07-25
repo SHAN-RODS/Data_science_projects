@@ -1,33 +1,20 @@
-"""Grounding layer — connectivity, nearest exit, and approximate travel distance (deterministic).
-
-This is *computation*, not AI. It organises the `space_boundaries` / `connected_elements` the parser
-already extracts into a lightweight traversal graph and reads distances off the space centroids. It is
-deliberately **not** a shortest-path metric engine (no Dijkstra / IndoorGML) — it does breadth-first
-reachability and sums straight-line centroid segments along the path found.
-
-Model:
-  * A shared **door** between two spaces is a traversable edge; a door on a space that is also a
-    **final exit** connects that space to OUTSIDE. A shared wall is adjacency, not traversable.
-  * **Final exits** are exit-flagged doors on the entrance/ground storey only. Exit-flagged doors on
-    upper floors (balcony/fire doors the coarse detector picks up) are not treated as ways to safety;
-    upper-floor occupants must route down via the **stairs**, which are edges between stair spaces on
-    adjacent storeys.
-  * All travel distances are labelled **approx** — centroid-to-exit straight-line segments summed
-    along the path, not compliance-grade measurements.
-
-Every space that cannot be grounded (no occupant load, no path to a final exit) is surfaced in
-`not_assessed` rather than silently passed.
-"""
+#It just explains about the connectivity, the nearest exit and the approximate travel distance
 
 import math
 from collections import deque, defaultdict
 
 from core_backend.occupancy import occupant_load
+from core_backend.travel_distance import compute_travel_distances
+import sys
+from collections import Counter
+from core_backend.ifc_parser import parser_summary
+from core_backend.space_classifier import classify_spaces
+from core_backend.sample_paths import resolve_ifc
 
 OUTSIDE = "OUTSIDE"
-GROUND_TOLERANCE_M = 0.5      # a storey within this of entrance level counts as ground
-STAIR_MAX_DZ_M = 4.0          # two stair spaces this close vertically are one flight apart
-STAIR_MAX_DXY_M = 12.0        # ...and this close horizontally are the same stair core
+GROUND_TOLERANCE_M = 0.5      
+STAIR_MAX_DZ_M = 4.0          
+STAIR_MAX_DXY_M = 12.0        
 
 
 def _dist(a, b):
@@ -47,13 +34,6 @@ def _nearest_storey_height(z, storeys):
 
 
 def build_graph(summary, classified, discounted_exits=frozenset()):
-    """Build the traversal graph.
-
-    Returns (adjacency, positions, final_exits) where:
-      adjacency: node -> set(nodes); nodes are space GUIDs, ("EXIT", door_id) tuples, and OUTSIDE.
-      positions: node -> (x, y, z) for spaces (centroid) and exit nodes (door position).
-      final_exits: {door_id: {id, name, width_m, storey, position}} for ground-level exits kept.
-    """
     spaces = {sp["id"]: sp for sp in summary["spaces"]}
     use_type = {c["guid"]: c["use_type"] for c in classified}
     storeys = summary.get("storeys", [])
@@ -61,7 +41,6 @@ def build_graph(summary, classified, discounted_exits=frozenset()):
     positions = {sp_id: sp["centroid"] for sp_id, sp in spaces.items()}
     adjacency = defaultdict(set)
 
-    # --- final exits: ground-level, exit-flagged doors not discounted ---------------------------
     final_exits = {}
     for door in summary.get("emergency_exits", []):
         if door["id"] in discounted_exits:
@@ -74,7 +53,6 @@ def build_graph(summary, classified, discounted_exits=frozenset()):
                 "position": p, "storey_height_m": height,
             }
 
-    # --- door edges: doors linked to the spaces they connect (boundaries + hosting walls) --------
     for door_id, bounded in summary.get("door_space_links", {}).items():
         bounded = [s for s in bounded if s in spaces]
         if not bounded:
@@ -88,13 +66,11 @@ def build_graph(summary, classified, discounted_exits=frozenset()):
             adjacency[node].add(OUTSIDE)
             adjacency[OUTSIDE].add(node)
         else:
-            # interior (or non-final) door: connect every pair of spaces it bounds
             for i in range(len(bounded)):
                 for j in range(i + 1, len(bounded)):
                     adjacency[bounded[i]].add(bounded[j])
                     adjacency[bounded[j]].add(bounded[i])
-
-    # --- stair edges: link stair spaces on adjacent storeys within the same core ----------------
+ 
     stair_spaces = [sp for sp in summary["spaces"]
                     if use_type.get(sp["id"]) == "stair" and sp["centroid"] is not None]
     for i in range(len(stair_spaces)):
@@ -132,7 +108,6 @@ def _reconstruct(prev, target):
 
 
 def _path_distance(path, positions):
-    """Sum straight-line segments between successive positioned nodes along the path (approx)."""
     total, previous = 0.0, None
     for node in path:
         p = positions.get(node)
@@ -145,11 +120,6 @@ def _path_distance(path, positions):
 
 
 def nearest_exit(space_id, adjacency, positions):
-    """Return (exit_door_id, approx_travel_distance_m, path) for the min-distance reachable exit.
-
-    Uses BFS reachability, then picks the exit with the smallest summed centroid-path distance among
-    all reachable exits. Returns (None, None, None) if no final exit is reachable.
-    """
     prev = _bfs_prev(space_id, adjacency)
     best = None
     for node in prev:
@@ -163,13 +133,15 @@ def nearest_exit(space_id, adjacency, positions):
     return best
 
 
-def ground_spaces(summary, classified, discounted_exits=frozenset()):
-    """Produce per-space grounded facts + a not_assessed list.
-
-    Returns {"spaces": [...], "final_exits": [...], "not_assessed": [...]}.
-    """
+def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdiction="england"):
     adjacency, positions, final_exits = build_graph(summary, classified, discounted_exits)
     use_type = {c["guid"]: c["use_type"] for c in classified}
+
+    travel = compute_travel_distances(summary, classified, final_exits, discounted_exits)
+
+    dwelling_storeys = {(sp["storey"] or {}).get("id")
+                        for sp in summary["spaces"] if use_type.get(sp["id"]) == "dwelling"}
+    dwelling_storeys.discard(None)
 
     grounded, not_assessed = [], []
     excluded_measurement_zones = 0
@@ -177,15 +149,25 @@ def ground_spaces(summary, classified, discounted_exits=frozenset()):
         gid = sp["id"]
         ut = use_type.get(gid, "unknown")
 
-        # BIM area/volume overlays are not egress spaces — exclude them rather than flag them.
         if ut == "measurement_zone":
             excluded_measurement_zones += 1
             continue
 
-        occ = occupant_load(sp, ut)
-        exit_id, distance, _ = nearest_exit(gid, adjacency, positions)
-        reachable = exit_id is not None
-        # a space is occupiable if it carries occupants or its use is still unresolved
+        on_dwelling = (sp["storey"] or {}).get("id") in dwelling_storeys
+        occ = occupant_load(sp, ut, on_dwelling_storey=on_dwelling, jurisdiction=jurisdiction)
+        exit_id, bfs_distance, _ = nearest_exit(gid, adjacency, positions)
+
+        td = travel.get(gid)
+        if td is not None:
+            distance = td["travel_distance_m"]
+            reachable = td["reachable"]
+            method = td["travel_distance_method"]
+            remote_point = td["most_remote_point"]
+        else:
+            distance = round(bfs_distance, 1) if bfs_distance is not None else None
+            reachable = exit_id is not None
+            method = "fallback_centroid"
+            remote_point = None
         occupiable = occ["occupant_load"] is None or occ["occupant_load"] > 0
 
         grounded.append({
@@ -198,7 +180,9 @@ def ground_spaces(summary, classified, discounted_exits=frozenset()):
             "occupant_load": occ["occupant_load"],
             "occupant_basis": occ["occupant_basis"],
             "nearest_exit": exit_id,
-            "approx_travel_distance_m": round(distance, 1) if distance is not None else None,
+            "travel_distance_m": distance,
+            "travel_distance_method": method,
+            "most_remote_point": remote_point,
             "reachable": reachable,
         })
 
@@ -206,7 +190,6 @@ def ground_spaces(summary, classified, discounted_exits=frozenset()):
             not_assessed.append({"element": gid, "name": sp["name"],
                                  "missing": occ["not_assessed"],
                                  "action": "flagged, not silently passed"})
-        # only an occupiable space that cannot reach a final exit is a safety gap worth surfacing
         if occupiable and not reachable:
             not_assessed.append({"element": gid, "name": sp["name"],
                                  "missing": "no egress path to a ground-level final exit was found",
@@ -220,19 +203,13 @@ def ground_spaces(summary, classified, discounted_exits=frozenset()):
     }
 
 
-def discount_exit(summary, classified, exit_id):
-    """Re-ground the building with one exit removed (for the one-exit-discounted scenario variant)."""
-    return ground_spaces(summary, classified, discounted_exits=frozenset({exit_id}))
+def discount_exit(summary, classified, exit_id, jurisdiction="england"):
+    return ground_spaces(summary, classified, discounted_exits=frozenset({exit_id}),
+                         jurisdiction=jurisdiction)
 
 
 if __name__ == "__main__":
-    import sys
-    from collections import Counter
-    from core_backend.ifc_parser import parser_summary
-    from core_backend.space_classifier import classify_spaces
-    from core_backend.sample_paths import resolve_ifc
 
-    # dictionary-only by default (API-free spine check); pass --llm for the full classification
     use_llm = "--llm" in sys.argv
     args = [a for a in sys.argv if not a.startswith("--")]
     summary = parser_summary(resolve_ifc(args))
@@ -243,7 +220,7 @@ if __name__ == "__main__":
     reachable = [s for s in spaces if s["reachable"]]
     with_occ = [s for s in spaces if s["occupant_load"] is not None]
     total_occ = sum(s["occupant_load"] for s in with_occ)
-    dists = [s["approx_travel_distance_m"] for s in reachable if s["approx_travel_distance_m"]]
+    dists = [s["travel_distance_m"] for s in reachable if s["travel_distance_m"]]
     occupiable = [s for s in spaces if s["occupant_load"] is None or s["occupant_load"] > 0]
     occ_reach = [s for s in occupiable if s["reachable"]]
 
@@ -254,7 +231,7 @@ if __name__ == "__main__":
     print(f"Occupiable spaces reachable:      {len(occ_reach)}/{len(occupiable)}")
     print(f"Spaces with occupant load: {len(with_occ)}/{len(spaces)} | total occupant load: {total_occ}")
     if dists:
-        print(f"Approx travel distance (m): min={min(dists):.1f} "
+        print(f"Geodesic travel distance (m): min={min(dists):.1f} "
               f"mean={sum(dists)/len(dists):.1f} max={max(dists):.1f}")
     print(f"not_assessed entries: {len(grounded['not_assessed'])}")
 
@@ -270,4 +247,4 @@ if __name__ == "__main__":
         st = s["storey"]["name"] if s["storey"] else "None"
         print(f"  {s['use_type']:14} storey={st:10} occ={s['occupant_load']} "
               f"exit={s['nearest_exit'][:8] if s['nearest_exit'] else None} "
-              f"dist={s['approx_travel_distance_m']}m")
+              f"dist={s['travel_distance_m']}m ({s['travel_distance_method']})")

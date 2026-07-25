@@ -13,7 +13,7 @@ def _minimal_object(narrative):
         "circulation": [],
         "spaces": [{"guid": "A", "name": "A", "use_type": "living", "storey": "Ground",
                     "area_m2": 50.0, "occupant_load": 10, "nearest_exit": "E1",
-                    "approx_travel_distance_m": 15.0, "reachable": True}],
+                    "travel_distance_m": 15.0, "reachable": True}],
         "scenarios": [
             {"id": "SCN-BASE", "type": "base_case", "title": "t",
              "conditions": {"exits_available": ["E1"], "exits_discounted": [], "occupants_total": 10},

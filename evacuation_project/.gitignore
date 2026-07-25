@@ -26,3 +26,5 @@ core_backend/ifc_parser_test.py
 core_backend/regulation_check_1.py
 core_backend/scenario_llm_1.py
 frontend/app_1.py
+regulations_doc/
+cplan.md

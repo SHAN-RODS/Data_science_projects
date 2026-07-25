@@ -10,20 +10,20 @@ if project_root not in sys.path:
 
 from core_backend.scenario_generation_llm import build_full_scenario
 from core_backend.validation import validate
-from core_backend.export_results import export_json, export_xml
+from core_backend.export_results import export_json
 from core_backend.llm import select_llm
 
 load_dotenv()
 os.makedirs("uploads", exist_ok=True)
 
 jurisdictions = {
-    "England Approved Document B Volume 1": "england",
-    "Wales Approved Document B Volume 1": "wales",
-    "Northern Ireland Technical Booklet E-2012": "northern_ireland",
-    "Scotland Technical Handbooks 2022": "scotland",
+    "Approved Document B Volume 1(England)": "england",
+    "Approved Document B Volume 1(Wales)": "wales",
+    "Technical Booklet E-2012 (Northern ireland)": "northern_ireland",
+    "Technical Handbooks 2022(Scotland)": "scotland",
 }
 
-st.set_page_config(page_title="AI Evacuation Scenario Generator", layout="wide")
+st.set_page_config(page_title="NLP Evacuation Scenario Generator", layout="wide")
 
 if "scenario_object" not in st.session_state:
     st.session_state.scenario_object = None
@@ -33,25 +33,23 @@ try:
 except Exception:
     model_label = "no LLM configured"
 
-# --- header ------------------------------------------------------------------------------------
-st.title("AI Evacuation Scenario Generator")
+# header 
+st.title("NLP Assisted Evacuation Scenario Generator")
 st.caption(
-    "Generates a **whole-building evacuation scenario** (base case + one-exit-discounted) from an "
-    "uploaded IFC/BIM model, grounded in the real building data. It is **not** a simulation and "
-    "**never** issues a compliance verdict — it reports measured values, limits, and flags, and "
-    "surfaces anything it could not assess."
+    "Generates a whole-building evacuation scenario (base case + one-exit-discounted) from an "
+    "uploaded IFC/BIM model, grounded in the real building data."
 )
-st.caption(f"Scenario reasoning model: {model_label}")
+st.caption(f"The Scenario reasoning model used: {model_label}")
 st.divider()
 
-# --- sidebar: inputs ---------------------------------------------------------------------------
+# sidebar 
 with st.sidebar:
-    st.header("1 · Regulation reference")
-    jurisdiction_label = st.selectbox("Cite thresholds from:", list(jurisdictions.keys()))
+    st.header("1. Regulation reference")
+    jurisdiction_label = st.selectbox("Select documents from:", list(jurisdictions.keys()))
     jurisdiction = jurisdictions[jurisdiction_label]
 
     st.divider()
-    st.header("2 · Upload IFC model")
+    st.header("2. Upload an IFC model")
     uploaded_file = st.file_uploader("Select an .ifc file", type=["ifc"],
                                      help="IFC export from Revit or ArchiCAD.")
 
@@ -61,7 +59,7 @@ with st.sidebar:
             save_path = os.path.join("uploads", uploaded_file.name)
             with open(save_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
-            with st.spinner("Parsing IFC · classifying spaces (AI) · grounding · generating scenarios (AI)…"):
+            with st.spinner("Parsing IFC · classifying spaces with AI · grounding · generating scenarios using AI…"):
                 obj = validate(build_full_scenario(save_path, jurisdiction=jurisdiction))
             st.session_state.scenario_object = obj
             st.rerun()
@@ -72,7 +70,6 @@ with st.sidebar:
             st.session_state.scenario_object = None
             st.rerun()
 
-
 def _per_storey_occupants(spaces):
     rollup = {}
     for s in spaces:
@@ -80,29 +77,26 @@ def _per_storey_occupants(spaces):
         rollup[storey] = rollup.get(storey, 0) + (s.get("occupant_load") or 0)
     return rollup
 
-
 obj = st.session_state.scenario_object
 
-# --- instructions (no result yet) --------------------------------------------------------------
+# instructions  
 if obj is None:
     st.subheader("How it works")
     c1, c2, c3, c4 = st.columns(4)
-    c1.info("**1 · Parse**\nExtract spaces, doors, stairs, exits, centroids and storeys from the IFC.")
-    c2.info("**2 · Classify (AI)**\nA dictionary resolves clear room labels; the LLM handles the messy, "
+    c1.info("**1. Parse-**\nExtract spaces, doors, stairs, exits, centroids and storeys from the IFC.")
+    c2.info("**2. Classifier (AI)-**\nA dictionary resolves clear room labels and the LLM handles the messy, "
             "multilingual ones.")
-    c3.info("**3 · Ground**\nCompute occupant load, connectivity, nearest exit and approximate travel "
+    c3.info("**3. Ground-**\nCompute occupant load, connectivity, nearest exit and approximate travel "
             "distance — deterministically.")
-    c4.info("**4 · Generate (AI)**\nThe LLM composes routes, bottlenecks, risks and a narrative for "
+    c4.info("**4. Generate (AI)-**\nThe LLM composes routes, bottlenecks, risks and a narrative for "
             "each variant, grounded in those numbers.")
     st.stop()
-
-# --- results: whole-building view --------------------------------------------------------------
+ 
 building = obj["building"]
 validation = obj.get("validation", {})
 
 st.subheader(f"Building — {building.get('project')}")
 
-# validation status
 inv = validation.get("invariants_checked", {})
 vb1, vb2, vb3 = st.columns(3)
 with vb1:
@@ -123,7 +117,6 @@ with vb3:
     else:
         st.warning(f"Fact-check: {len(validation.get('ungrounded_numbers', []))} number(s) to review")
 
-# building metrics
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Storeys", building.get("storeys"))
 m2.metric("Total occupant load", building.get("total_occupant_load"))
@@ -136,9 +129,8 @@ if any(rollup.values()):
     st.caption("Occupant load by storey")
     st.bar_chart(pd.DataFrame({"occupants": rollup}))
 
-# not_assessed — front and centre
 not_assessed = obj.get("not_assessed", [])
-with st.expander(f"⚠ Not assessed — {len(not_assessed)} item(s) (never silently passed)",
+with st.expander(f"Not assessed — {len(not_assessed)} item(s) (never silently passed)",
                  expanded=len(not_assessed) > 0):
     st.caption("Missing data or no egress path — surfaced explicitly rather than assumed safe.")
     if not_assessed:
@@ -148,7 +140,6 @@ with st.expander(f"⚠ Not assessed — {len(not_assessed)} item(s) (never silen
 
 st.divider()
 
-# scenario switcher
 st.subheader("Evacuation scenarios")
 scenarios = obj.get("scenarios", [])
 labels = {f"{s['id']} — {s.get('type')}": s for s in scenarios}
@@ -189,11 +180,9 @@ if scn.get("routes"):
 
 st.divider()
 
-# spaces table
 with st.expander(f"Spaces ({len(obj['spaces'])}) — use-type, occupant load, nearest exit, travel distance"):
     st.dataframe(obj["spaces"], use_container_width=True, hide_index=True)
 
-# regulation reference (building-level, secondary) — summary + only the flagged exceptions
 reg_check = obj.get("regulation_check", {})
 by_reg = reg_check.get("by_regulation", [])
 flagged = reg_check.get("requires_manual_review", [])
@@ -213,14 +202,10 @@ with st.expander(f"Regulation reference — {jurisdiction_label} "
 
 st.divider()
 
-# export
 st.subheader("Export")
-ex1, ex2 = st.columns(2)
-with ex1:
-    st.download_button("Download JSON", data=export_json(obj),
-                       file_name="evacuation_scenario.json", mime="application/json",
-                       use_container_width=True)
-with ex2:
-    st.download_button("Download XML", data=export_xml(obj),
-                       file_name="evacuation_scenario.xml", mime="application/xml",
-                       use_container_width=True)
+json_str = export_json(obj)
+with st.expander("Preview JSON before downloading"):
+    st.json(obj)
+st.download_button("Download JSON", data=json_str,
+                   file_name="evacuation_scenario.json", mime="application/json",
+                   use_container_width=True)

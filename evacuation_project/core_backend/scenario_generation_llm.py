@@ -1,20 +1,4 @@
-"""AI stage 2 — evacuation scenario generation (the project's core contribution).
-
-The LLM composes a *whole-building* evacuation scenario (routes, bottlenecks, risks, assumptions, a
-narrative) for each variant. It is strictly grounded: it reasons over the numbers computed by the
-deterministic spine (occupant loads, exits, nearest-exit distances) and **never sources building
-facts itself**. Computation owns every figure; the LLM owns the reasoning and prose that sit next to
-those figures.
-
-Two variants are always produced (a single scenario is an existence proof, not a resilience test):
-  * SCN-BASE          — all final exits available.
-  * SCN-EXIT-BLOCKED  — the busiest final exit is discounted; occupants are re-routed. The distances
-                        it reasons over are re-computed deterministically (egress.discount_exit), not
-                        estimated by the model.
-
-The assembled object follows the schema in ``scenario_schema.py``; ``validation.validate`` fills in
-the ``validation`` block (schema check, invariants, number fact-check).
-"""
+#This is the core part of the project where it creates the whole building evacuation scenarios having the routes, bottlenecks, risks, assumptions and a narrative.
 
 import os
 from collections import Counter, defaultdict
@@ -25,22 +9,28 @@ from pydantic import BaseModel, Field
 
 from core_backend.llm import select_llm
 from core_backend.egress import ground_spaces, discount_exit
+from core_backend.occupancy import JURISDICTION_SOURCE
+from core_backend.ifc_parser import parser_summary
+from core_backend.space_classifier import classify_spaces
+from core_backend.uk_regulation_checking import annotate_and_summarize
+import sys
+import json
+from core_backend.sample_paths import resolve_ifc
 
-DISTANCE_METHOD = "centroid straight-line, summed along the traversal path (approx — not compliance-grade)"
+DISTANCE_METHOD = ("geodesic shortest path over a per-storey walkable raster (0.1 m cells) from each "
+                   "room's most remote point, plus stair-going descent for upper storeys — a "
+                   "geometry-based measurement (approx to cell size), non-verdict")
 
 
 def _round(value, ndigits):
-    """Round a number for output; pass through None / non-numbers unchanged."""
     return round(value, ndigits) if isinstance(value, (int, float)) else value
 
-
-# --- what the LLM produces per variant (the AI-owned fields) ------------------------------------
+# What the LLM produces per variant 
 class Route(BaseModel):
     from_area: str = Field(description="where occupants start (e.g. a storey or space name)")
     via: str = Field(default="", description="circulation/stair route taken")
     to_exit: str = Field(description="the exit id or name they leave by")
     note: str = Field(default="", description="short note, e.g. approx distance or a caveat")
-
 
 class ScenarioContent(BaseModel):
     title: str
@@ -52,9 +42,8 @@ class ScenarioContent(BaseModel):
     narrative: str
 
 
-# --- deterministic facts fed to the model -------------------------------------------------------
+# deterministic facts fed to the model 
 def _storey_rollup(grounded):
-    """Aggregate occupant load + travel distance per storey from the grounded spaces."""
     rollup = defaultdict(lambda: {"occupants": 0, "spaces": 0, "max_dist": 0.0, "unreachable": 0})
     for s in grounded["spaces"]:
         name = (s["storey"] or {}).get("name", "Unknown")
@@ -62,15 +51,14 @@ def _storey_rollup(grounded):
         row["spaces"] += 1
         if s["occupant_load"]:
             row["occupants"] += s["occupant_load"]
-        if s["reachable"] and s["approx_travel_distance_m"]:
-            row["max_dist"] = max(row["max_dist"], s["approx_travel_distance_m"])
+        if s["reachable"] and s["travel_distance_m"]:
+            row["max_dist"] = max(row["max_dist"], s["travel_distance_m"])
         if not s["reachable"]:
             row["unreachable"] += 1
     return rollup
 
 
 def _facts_block(building, grounded, conditions, reg_summary):
-    """Compact, grounded facts string for the LLM. Only these numbers may be used."""
     lines = [
         f"Building: {building['project']} | storeys: {building['storeys']} | "
         f"total occupant load: {building['total_occupant_load']} | "
@@ -88,14 +76,13 @@ def _facts_block(building, grounded, conditions, reg_summary):
     for storey, row in _storey_rollup(grounded).items():
         lines.append(f"  - {storey}: occupants={row['occupants']} spaces={row['spaces']} "
                      f"max_travel_m={round(row['max_dist'], 1)} unreachable={row['unreachable']}")
-    # a few longest-travel spaces (the pinch points worth naming)
-    reachable = [s for s in grounded["spaces"] if s["reachable"] and s["approx_travel_distance_m"]]
-    longest = sorted(reachable, key=lambda s: -s["approx_travel_distance_m"])[:6]
+    reachable = [s for s in grounded["spaces"] if s["reachable"] and s["travel_distance_m"]]
+    longest = sorted(reachable, key=lambda s: -s["travel_distance_m"])[:6]
     lines.append("")
     lines.append("Longest approx travel distances (space -> nearest exit):")
     for s in longest:
         storey = (s["storey"] or {}).get("name")
-        lines.append(f"  - {s['use_type']} on {storey}: {s['approx_travel_distance_m']} m "
+        lines.append(f"  - {s['use_type']} on {storey}: {s['travel_distance_m']} m "
                      f"to exit {s['nearest_exit']}")
     if grounded["not_assessed"]:
         lines.append("")
@@ -104,7 +91,6 @@ def _facts_block(building, grounded, conditions, reg_summary):
     lines.append("")
     lines.append(f"Regulation reference (measured vs limit, non-verdict): {reg_summary}")
     return "\n".join(lines)
-
 
 _SYSTEM = (
     "You are a fire-safety engineer preparing an evacuation SCENARIO (the input description for egress "
@@ -116,7 +102,6 @@ _SYSTEM = (
     "not assessed, treat them as an open risk, not as safe."
 )
 
-
 def _generate_variant(llm, building, grounded, conditions, reg_summary):
     facts = _facts_block(building, grounded, conditions, reg_summary)
     prompt = f"{_SYSTEM}\n\n=== COMPUTED FACTS ===\n{facts}\n\n=== TASK ===\nProduce the scenario."
@@ -125,7 +110,7 @@ def _generate_variant(llm, building, grounded, conditions, reg_summary):
     return content
 
 
-# --- deterministic assembly of the whole-building object ----------------------------------------
+# deterministic assembly of the whole-building object 
 def _building_block(summary, grounded, jurisdiction):
     occupiable = [s for s in grounded["spaces"] if s["area_m2"]]
     total_area = round(sum(s["area_m2"] for s in occupiable), 1)
@@ -139,7 +124,6 @@ def _building_block(summary, grounded, jurisdiction):
         "total_floor_area_m2": total_area,
         "total_occupant_load": total_occ,
     }
-
 
 def _spaces_block(grounded, classified):
     conf = {c["guid"]: c for c in classified}
@@ -157,11 +141,12 @@ def _spaces_block(grounded, classified):
             "occupant_load": s["occupant_load"],
             "occupant_basis": s["occupant_basis"],
             "nearest_exit": s["nearest_exit"],
-            "approx_travel_distance_m": _round(s["approx_travel_distance_m"], 1),
+            "travel_distance_m": _round(s["travel_distance_m"], 1),
+            "travel_distance_method": s.get("travel_distance_method"),
+            "most_remote_point": s.get("most_remote_point"),
             "reachable": s["reachable"],
         })
     return out
-
 
 def _circulation_block(summary, classified):
     stair_ids = {c["guid"] for c in classified if c["use_type"] == "stair"}
@@ -171,11 +156,9 @@ def _circulation_block(summary, classified):
                     "width_m": _round(stair.get("width"), 2)})
     return out
 
-
 def _exits_block(final_exits):
     return [{"id": e["id"], "name": e["name"], "type": "final_exit", "width_m": _round(e["width_m"], 2)}
             for e in final_exits]
-
 
 def _conditions(building, final_exits, discounted_ids, occupancy_state):
     available = [e for e in final_exits if e["id"] not in discounted_ids]
@@ -186,18 +169,11 @@ def _conditions(building, final_exits, discounted_ids, occupancy_state):
         "occupants_total": building["total_occupant_load"],
     }
 
-
 def generate_scenario_object(summary, classified, jurisdiction, reg_block, llm=None, model_label=None):
-    """Assemble the whole-building scenario object with >=2 grounded, LLM-reasoned variants.
-
-    ``reg_block`` is the compact building-level regulation block from
-    ``uk_regulation_checking.annotate_and_summarize`` (jurisdiction, basis, by_regulation,
-    requires_manual_review, not_assessed).
-    """
     if llm is None:
         llm, model_label = select_llm(max_tokens=4096)
 
-    base_grounded = ground_spaces(summary, classified)
+    base_grounded = ground_spaces(summary, classified, jurisdiction=jurisdiction)
     building = _building_block(summary, base_grounded, jurisdiction)
 
     by_reg = reg_block.get("by_regulation", [])
@@ -211,16 +187,16 @@ def generate_scenario_object(summary, classified, jurisdiction, reg_block, llm=N
 
     scenarios = []
 
-    # --- SCN-BASE: all exits available -----------------------------------------------------------
+    #SCN-BASE: all exits available 
     base_conditions = _conditions(building, base_grounded["final_exits"], set(), "night")
     base_content = _generate_variant(llm, building, base_grounded, base_conditions, reg_summary)
     scenarios.append(_assemble_scenario("SCN-BASE", "base_case", base_conditions, base_content))
 
-    # --- SCN-EXIT-BLOCKED: discount the busiest final exit ---------------------------------------
+    # SCN-EXIT-BLOCKED: discount the busiest final exit 
     usage = Counter(s["nearest_exit"] for s in base_grounded["spaces"] if s["nearest_exit"])
     if usage:
         blocked_id = usage.most_common(1)[0][0]
-        blocked_grounded = discount_exit(summary, classified, blocked_id)
+        blocked_grounded = discount_exit(summary, classified, blocked_id, jurisdiction=jurisdiction)
         blocked_conditions = _conditions(building, base_grounded["final_exits"],
                                          {blocked_id}, "night")
         blocked_content = _generate_variant(llm, building, blocked_grounded,
@@ -233,7 +209,9 @@ def generate_scenario_object(summary, classified, jurisdiction, reg_block, llm=N
         "provenance": {
             "generated_by_model": model_label,
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "occupancy_factor_source": "indicative area factors / dwelling room-count (approx)",
+            "occupancy_factor_source": (f"code occupancy load factors — "
+                                        f"{JURISDICTION_SOURCE.get(jurisdiction, JURISDICTION_SOURCE['england'])}"
+                                        f"; dwellings: NDSS bedspaces (habitable rooms + 1)"),
             "distance_method": DISTANCE_METHOD,
             "llm_grounded": True,
             "llm_temperature": os.getenv("ANTHROPIC_TEMPERATURE", "0"),
@@ -243,17 +221,15 @@ def generate_scenario_object(summary, classified, jurisdiction, reg_block, llm=N
         "circulation": _circulation_block(summary, classified),
         "spaces": _spaces_block(base_grounded, classified),
         "scenarios": scenarios,
-        # building-level regulation reference: per-regulation summary + only the flagged exceptions
         "regulation_check": {
             "jurisdiction": reg_block.get("jurisdiction", jurisdiction),
             "basis": reg_block.get("basis", "measured value vs applicable limit; non-verdict reference only"),
             "by_regulation": by_reg,
             "requires_manual_review": reg_block.get("requires_manual_review", []),
         },
-        "validation": {},   # filled by validation.validate()
+        "validation": {},   
         "not_assessed": base_grounded["not_assessed"] + reg_na,
     }
-
 
 def _assemble_scenario(scenario_id, scenario_type, conditions, content):
     return {
@@ -276,11 +252,6 @@ def _assemble_scenario(scenario_id, scenario_type, conditions, content):
 
 
 def build_full_scenario(ifc_path, jurisdiction="england", use_llm=True):
-    """End-to-end: parse -> classify -> annotate -> generate the whole-building scenario object."""
-    from core_backend.ifc_parser import parser_summary
-    from core_backend.space_classifier import classify_spaces
-    from core_backend.uk_regulation_checking import annotate_and_summarize
-
     summary = parser_summary(ifc_path)
     summary["source_ifc"] = os.path.basename(ifc_path)
     classified = classify_spaces(summary["spaces"], use_llm=use_llm)
@@ -289,9 +260,6 @@ def build_full_scenario(ifc_path, jurisdiction="england", use_llm=True):
 
 
 if __name__ == "__main__":
-    import sys
-    import json
-    from core_backend.sample_paths import resolve_ifc
 
     args = [a for a in sys.argv if not a.startswith("--")]
     obj = build_full_scenario(resolve_ifc(args), jurisdiction="england")
@@ -299,8 +267,8 @@ if __name__ == "__main__":
           f"{len(obj['spaces'])} spaces, {len(obj['exits'])} exits, "
           f"{len(obj['not_assessed'])} not_assessed.")
     for scn in obj["scenarios"]:
-        print(f"\n=== {scn['id']} ({scn['type']}) — {scn['title']} ===")
-        print(f"  conditions: {scn['conditions']}")
-        print(f"  routes: {len(scn['routes'])} | bottlenecks: {len(scn['bottlenecks'])} "
-              f"| risks: {len(scn['risks'])}")
-        print(f"  narrative: {scn['narrative'][:280]}...")
+        print(f"\n{scn['id']} ({scn['type']}) — {scn['title']}")
+        print(f"conditions: {scn['conditions']}")
+        print(f"routes: {len(scn['routes'])} | bottlenecks: {len(scn['bottlenecks'])} "
+              f"|risks: {len(scn['risks'])}")
+        print(f"narrative: {scn['narrative'][:280]}...")
