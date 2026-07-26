@@ -8,9 +8,11 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from core_backend.ifc_parser import parser_summary
+from core_backend.uk_regulation_checking import regulation_gate
 from core_backend.scenario_generation_llm import build_full_scenario
 from core_backend.validation import validate
-from core_backend.export_results import export_json
+from core_backend.export_results import export_json, export_records, build_records
 from core_backend.llm import select_llm
 
 load_dotenv()
@@ -25,26 +27,27 @@ jurisdictions = {
 
 st.set_page_config(page_title="NLP Evacuation Scenario Generator", layout="wide")
 
-if "scenario_object" not in st.session_state:
-    st.session_state.scenario_object = None
+for key in ("gate_result", "gate_context", "ifc_path", "scenario_object"):
+    st.session_state.setdefault(key, None)
 
 try:
     _, model_label = select_llm()
 except Exception:
     model_label = "no LLM configured"
 
-# header 
+# header
 st.title("NLP Assisted Evacuation Scenario Generator")
 st.caption(
-    "Generates a whole-building evacuation scenario (base case + one-exit-discounted) from an "
-    "uploaded IFC/BIM model, grounded in the real building data."
+    "Upload an IFC/BIM model. The building is first checked against the selected regulation (pass/fail); "
+    "only if it passes does the AI generate a whole-building evacuation scenario set — occupancy, "
+    "distances and the scenario conditions are all decided by the AI in a single grounded call."
 )
 st.caption(f"The Scenario reasoning model used: {model_label}")
 st.divider()
 
-# sidebar 
+# sidebar
 with st.sidebar:
-    st.header("1. Regulation reference")
+    st.header("1. Regulation")
     jurisdiction_label = st.selectbox("Select documents from:", list(jurisdictions.keys()))
     jurisdiction = jurisdictions[jurisdiction_label]
 
@@ -55,20 +58,42 @@ with st.sidebar:
 
     if uploaded_file is not None:
         st.success(f"Ready: {uploaded_file.name}")
-        if st.button("Generate scenarios", type="primary", use_container_width=True):
+        if st.button("Check building against regulation", type="primary", use_container_width=True):
             save_path = os.path.join("uploads", uploaded_file.name)
             with open(save_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
-            with st.spinner("Parsing IFC · classifying spaces with AI · grounding · generating scenarios using AI…"):
-                obj = validate(build_full_scenario(save_path, jurisdiction=jurisdiction))
+            with st.spinner("Parsing IFC · checking against the selected regulation…"):
+                summary = parser_summary(save_path)
+                gate = regulation_gate(summary, jurisdiction=jurisdiction)
+            st.session_state.ifc_path = save_path
+            st.session_state.gate_result = gate
+            st.session_state.gate_context = (uploaded_file.name, jurisdiction)
+            st.session_state.scenario_object = None
+            st.rerun()
+
+    # Step 2 unlocks only when the current file+jurisdiction passed the gate.
+    gate = st.session_state.gate_result
+    context_ok = (uploaded_file is not None
+                  and st.session_state.gate_context == (uploaded_file.name, jurisdiction))
+    if (gate is not None and gate.get("passed") and context_ok
+            and st.session_state.scenario_object is None):
+        st.divider()
+        st.caption("Building passed — generation unlocked.")
+        if st.button("Generate scenarios", type="primary", use_container_width=True):
+            with st.spinner("Classifying spaces with AI · generating occupancy, distances & scenarios "
+                            "in one AI call…"):
+                obj = validate(build_full_scenario(st.session_state.ifc_path,
+                                                   jurisdiction=jurisdiction, gate=gate))
             st.session_state.scenario_object = obj
             st.rerun()
 
-    if st.session_state.scenario_object is not None:
+    if st.session_state.gate_result is not None or st.session_state.scenario_object is not None:
         st.divider()
-        if st.button("Upload a new file", use_container_width=True):
-            st.session_state.scenario_object = None
+        if st.button("Start over / upload a new file", use_container_width=True):
+            for key in ("gate_result", "gate_context", "ifc_path", "scenario_object"):
+                st.session_state[key] = None
             st.rerun()
+
 
 def _per_storey_occupants(spaces):
     rollup = {}
@@ -77,21 +102,65 @@ def _per_storey_occupants(spaces):
         rollup[storey] = rollup.get(storey, 0) + (s.get("occupant_load") or 0)
     return rollup
 
+
+def render_gate(gate, label):
+    st.subheader("Step 1 — Regulation check")
+    n_viol, n_mr = len(gate["violations"]), len(gate["manual_review"])
+    if gate["passed"]:
+        st.success(f"✅ PASS — {label}: no threshold violations found "
+                   f"({n_mr} manual-review item(s), non-blocking).")
+    else:
+        st.error(f"❌ FAIL — {label}: {n_viol} violation(s). Scenario generation is blocked "
+                 f"until the building passes.")
+    if gate["violations"]:
+        st.markdown("**Violations (block generation)**")
+        st.dataframe(
+            [{"severity": v["severity"], "rule": v["regulation_id"],
+              "element": f"{v['element_type']}/{v['element_name']}",
+              "issue": v["issue"], "reference": v["reference"]} for v in gate["violations"]],
+            use_container_width=True, hide_index=True)
+    if gate["manual_review"]:
+        with st.expander(f"Manual review — {n_mr} item(s) (cannot be decided from the IFC; non-blocking)"):
+            st.dataframe(
+                [{"rule": v["regulation_id"],
+                  "element": f"{v['element_type']}/{v['element_name']}",
+                  "issue": v["issue"]} for v in gate["manual_review"]],
+                use_container_width=True, hide_index=True)
+
+
+gate = st.session_state.gate_result
 obj = st.session_state.scenario_object
 
-# instructions  
-if obj is None:
+# landing / instructions
+if gate is None:
     st.subheader("How it works")
     c1, c2, c3, c4 = st.columns(4)
     c1.info("**1. Parse-**\nExtract spaces, doors, stairs, exits, centroids and storeys from the IFC.")
-    c2.info("**2. Classifier (AI)-**\nA dictionary resolves clear room labels and the LLM handles the messy, "
-            "multilingual ones.")
-    c3.info("**3. Ground-**\nCompute occupant load, connectivity, nearest exit and approximate travel "
-            "distance — deterministically.")
-    c4.info("**4. Generate (AI)-**\nThe LLM composes routes, bottlenecks, risks and a narrative for "
-            "each variant, grounded in those numbers.")
+    c2.info("**2. Regulation gate-**\nThe building is checked against your selected regulation and shown "
+            "a clear PASS/FAIL. Generation is blocked unless it passes.")
+    c3.info("**3. Classifier (AI)-**\nA dictionary resolves clear room labels and the LLM handles the "
+            "messy, multilingual ones.")
+    c4.info("**4. Generate (AI)-**\nOne grounded AI call decides occupancy, travel distances AND the "
+            "scenario set (how many people, which exits open/closed) — then writes routes, bottlenecks, "
+            "risks and a narrative.")
     st.stop()
- 
+
+# Step 1 verdict — always shown once a check has run
+render_gate(gate, jurisdiction_label)
+st.divider()
+
+if not gate["passed"]:
+    st.warning("Fix the flagged violations (or select a different regulation) and re-check. "
+               "The AI will not generate scenarios for a building that fails the regulation.")
+    st.stop()
+
+if obj is None:
+    st.subheader("Step 2 — Generate scenarios")
+    st.info("Building passes the regulation. Use **Generate scenarios** in the sidebar to run the "
+            "single AI generation call.")
+    st.stop()
+
+# ---- generated scenario view ----
 building = obj["building"]
 validation = obj.get("validation", {})
 
@@ -126,7 +195,7 @@ m5.metric("Spaces", len(obj.get("spaces", [])))
 
 rollup = _per_storey_occupants(obj["spaces"])
 if any(rollup.values()):
-    st.caption("Occupant load by storey")
+    st.caption("Occupant load by storey (AI-estimated)")
     st.bar_chart(pd.DataFrame({"occupants": rollup}))
 
 not_assessed = obj.get("not_assessed", [])
@@ -140,7 +209,7 @@ with st.expander(f"Not assessed — {len(not_assessed)} item(s) (never silently 
 
 st.divider()
 
-st.subheader("Evacuation scenarios")
+st.subheader("Evacuation scenarios (AI-proposed)")
 scenarios = obj.get("scenarios", [])
 labels = {f"{s['id']} — {s.get('type')}": s for s in scenarios}
 choice = st.radio("Select a scenario variant:", list(labels.keys()), horizontal=True)
@@ -148,15 +217,23 @@ scn = labels[choice]
 
 st.markdown(f"#### {scn.get('title')}")
 cond = scn.get("conditions", {})
-cc1, cc2, cc3 = st.columns(3)
-cc1.metric("Occupants to evacuate", cond.get("occupants_total"))
-cc2.metric("Exits available", len(cond.get("exits_available", [])))
-cc3.metric("Exits discounted", len(cond.get("exits_discounted", [])))
+cc1, cc2, cc3, cc4 = st.columns(4)
+cc1.metric("Occupancy state", cond.get("occupancy_state"))
+cc2.metric("Occupants to evacuate", cond.get("occupants_total"))
+cc3.metric("Exits available", len(cond.get("exits_available", [])))
+cc4.metric("Exits discounted", len(cond.get("exits_discounted", [])))
 if cond.get("exits_discounted"):
     st.warning(f"Exit(s) discounted in this variant: {', '.join(cond['exits_discounted'])}")
 
 st.markdown("**Narrative**")
 st.info(scn.get("narrative", ""))
+
+if scn.get("ai_explanation"):
+    st.markdown("**AI explanation**")
+    st.write(scn["ai_explanation"])
+if scn.get("regulatory_justification"):
+    st.markdown("**Regulatory justification**")
+    st.write(scn["regulatory_justification"])
 
 d1, d2 = st.columns(2)
 with d1:
@@ -180,32 +257,20 @@ if scn.get("routes"):
 
 st.divider()
 
-with st.expander(f"Spaces ({len(obj['spaces'])}) — use-type, occupant load, nearest exit, travel distance"):
+with st.expander(f"Spaces ({len(obj['spaces'])}) — use-type, occupant load, nearest exit, travel distance "
+                 f"(all AI-estimated)"):
     st.dataframe(obj["spaces"], use_container_width=True, hide_index=True)
-
-reg_check = obj.get("regulation_check", {})
-by_reg = reg_check.get("by_regulation", [])
-flagged = reg_check.get("requires_manual_review", [])
-with st.expander(f"Regulation reference — {jurisdiction_label} "
-                 f"({len(by_reg)} rules checked, {len(flagged)} item(s) to review, non-verdict)"):
-    st.caption("Measured value + applicable limit + flag. Reference only — not a compliance verdict.")
-    if by_reg:
-        st.markdown("**Per-regulation summary**")
-        st.dataframe(by_reg, use_container_width=True, hide_index=True)
-    if flagged:
-        st.markdown("**Requires manual review**")
-        st.dataframe(flagged, use_container_width=True, hide_index=True)
-    elif by_reg:
-        st.success("No elements flagged for manual review.")
-    if not by_reg:
-        st.caption("No measurable notes for this jurisdiction/model.")
 
 st.divider()
 
 st.subheader("Export")
-json_str = export_json(obj)
-with st.expander("Preview JSON before downloading"):
-    st.json(obj)
-st.download_button("Download JSON", data=json_str,
-                   file_name="evacuation_scenario.json", mime="application/json",
+st.caption("The deliverable is a record per scenario: unique_id, description, relevant_ifc_element, "
+           "regulatory_justification, ai_explanation and the scenario itself.")
+records_json = export_records(obj)
+with st.expander("Preview records JSON before downloading", expanded=True):
+    st.json(build_records(obj))
+st.download_button("Download JSON", data=records_json,
+                   file_name="evacuation_scenario_records.json", mime="application/json",
                    use_container_width=True)
+with st.expander("Full building object (reference — spaces, exits, gate, provenance)"):
+    st.json(obj)

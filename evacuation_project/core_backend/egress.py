@@ -1,12 +1,11 @@
-#It just explains about the connectivity, the nearest exit and the approximate travel distance
+#Geometry helpers for egress: the connectivity graph, ground-level final-exit detection and (reference)
+#nearest-exit search. Occupancy and travel distance are now produced by the LLM (scenario_generation_llm),
+#so this module is pure geometry — build_graph is what the generator consumes.
 
 import math
 from collections import deque, defaultdict
 
-from core_backend.occupancy import occupant_load
-from core_backend.travel_distance import compute_travel_distances
 import sys
-from collections import Counter
 from core_backend.ifc_parser import parser_summary
 from core_backend.space_classifier import classify_spaces
 from core_backend.sample_paths import resolve_ifc
@@ -133,118 +132,20 @@ def nearest_exit(space_id, adjacency, positions):
     return best
 
 
-def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdiction="england"):
-    adjacency, positions, final_exits = build_graph(summary, classified, discounted_exits)
-    use_type = {c["guid"]: c["use_type"] for c in classified}
-
-    travel = compute_travel_distances(summary, classified, final_exits, discounted_exits)
-
-    dwelling_storeys = {(sp["storey"] or {}).get("id")
-                        for sp in summary["spaces"] if use_type.get(sp["id"]) == "dwelling"}
-    dwelling_storeys.discard(None)
-
-    grounded, not_assessed = [], []
-    excluded_measurement_zones = 0
-    for sp in summary["spaces"]:
-        gid = sp["id"]
-        ut = use_type.get(gid, "unknown")
-
-        if ut == "measurement_zone":
-            excluded_measurement_zones += 1
-            continue
-
-        on_dwelling = (sp["storey"] or {}).get("id") in dwelling_storeys
-        occ = occupant_load(sp, ut, on_dwelling_storey=on_dwelling, jurisdiction=jurisdiction)
-        exit_id, bfs_distance, _ = nearest_exit(gid, adjacency, positions)
-
-        td = travel.get(gid)
-        if td is not None:
-            distance = td["travel_distance_m"]
-            reachable = td["reachable"]
-            method = td["travel_distance_method"]
-            remote_point = td["most_remote_point"]
-        else:
-            distance = round(bfs_distance, 1) if bfs_distance is not None else None
-            reachable = exit_id is not None
-            method = "fallback_centroid"
-            remote_point = None
-        occupiable = occ["occupant_load"] is None or occ["occupant_load"] > 0
-
-        grounded.append({
-            "guid": gid,
-            "name": sp["name"],
-            "long_name": sp["long_name"],
-            "use_type": ut,
-            "storey": sp["storey"],
-            "area_m2": sp["area"],
-            "occupant_load": occ["occupant_load"],
-            "occupant_basis": occ["occupant_basis"],
-            "nearest_exit": exit_id,
-            "travel_distance_m": distance,
-            "travel_distance_method": method,
-            "most_remote_point": remote_point,
-            "reachable": reachable,
-        })
-
-        if occ["not_assessed"]:
-            not_assessed.append({"element": gid, "name": sp["name"],
-                                 "missing": occ["not_assessed"],
-                                 "action": "flagged, not silently passed"})
-        if occupiable and not reachable:
-            not_assessed.append({"element": gid, "name": sp["name"],
-                                 "missing": "no egress path to a ground-level final exit was found",
-                                 "action": "flagged, not silently passed"})
-
-    return {
-        "spaces": grounded,
-        "final_exits": list(final_exits.values()),
-        "not_assessed": not_assessed,
-        "excluded_measurement_zones": excluded_measurement_zones,
-    }
-
-
-def discount_exit(summary, classified, exit_id, jurisdiction="england"):
-    return ground_spaces(summary, classified, discounted_exits=frozenset({exit_id}),
-                         jurisdiction=jurisdiction)
-
-
 if __name__ == "__main__":
 
     use_llm = "--llm" in sys.argv
     args = [a for a in sys.argv if not a.startswith("--")]
     summary = parser_summary(resolve_ifc(args))
     classified = classify_spaces(summary["spaces"], use_llm=use_llm)
-    grounded = ground_spaces(summary, classified)
 
-    spaces = grounded["spaces"]
-    reachable = [s for s in spaces if s["reachable"]]
-    with_occ = [s for s in spaces if s["occupant_load"] is not None]
-    total_occ = sum(s["occupant_load"] for s in with_occ)
-    dists = [s["travel_distance_m"] for s in reachable if s["travel_distance_m"]]
-    occupiable = [s for s in spaces if s["occupant_load"] is None or s["occupant_load"] > 0]
-    occ_reach = [s for s in occupiable if s["reachable"]]
+    adjacency, positions, final_exits = build_graph(summary, classified)
+    spaces = summary["spaces"]
+    reachable = sum(1 for sp in spaces if nearest_exit(sp["id"], adjacency, positions)[0] is not None)
 
-    print(f"Final (ground-level) exits kept: {len(grounded['final_exits'])}")
-    print(f"Measurement-zone overlays excluded: {grounded['excluded_measurement_zones']}")
-    print(f"Egress spaces: {len(spaces)} (after excluding overlays)")
-    print(f"Spaces reachable to a final exit: {len(reachable)}/{len(spaces)}")
-    print(f"Occupiable spaces reachable:      {len(occ_reach)}/{len(occupiable)}")
-    print(f"Spaces with occupant load: {len(with_occ)}/{len(spaces)} | total occupant load: {total_occ}")
-    if dists:
-        print(f"Geodesic travel distance (m): min={min(dists):.1f} "
-              f"mean={sum(dists)/len(dists):.1f} max={max(dists):.1f}")
-    print(f"not_assessed entries: {len(grounded['not_assessed'])}")
-
-    print("\nOccupant load by use_type:")
-    by_use = Counter()
-    for s in with_occ:
-        by_use[s["use_type"]] += s["occupant_load"]
-    for ut, occ in by_use.most_common():
-        print(f"  {ut:18} {occ}")
-
-    print("\nSample grounded spaces (reachable):")
-    for s in reachable[:10]:
-        st = s["storey"]["name"] if s["storey"] else "None"
-        print(f"  {s['use_type']:14} storey={st:10} occ={s['occupant_load']} "
-              f"exit={s['nearest_exit'][:8] if s['nearest_exit'] else None} "
-              f"dist={s['travel_distance_m']}m ({s['travel_distance_method']})")
+    print(f"Spaces: {len(spaces)}")
+    print(f"Final (ground-level) exits detected: {len(final_exits)}")
+    for e in list(final_exits.values())[:10]:
+        print(f"  {e['id']} name={e['name']} width_m={e['width_m']} height_m={round(e['storey_height_m'], 2)}")
+    print(f"Spaces with a graph path to a final exit: {reachable}/{len(spaces)} "
+          f"(reference connectivity; occupancy/distance are now produced by the LLM generator)")
