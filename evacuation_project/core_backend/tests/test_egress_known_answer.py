@@ -63,6 +63,32 @@ def test_l_corridor_exceeds_euclidean():
     assert a["travel_distance_m"] > euclidean            # the path bends past straight-line
 
 
+def test_equidistant_exits_tie_break_the_same_way_every_time():
+    """A room with two exits at exactly the same distance must always pick the same one.
+
+    The adjacency graph is built from sets, so before the BFS sorted its neighbours the winner
+    depended on the interpreter's string hash seed — the same model could hand a different
+    nearest_exit (and a different simulation goal) to each run.
+    """
+    summary = {
+        "spaces": [{"id": "A", "name": "A", "long_name": "Living", "area": 12.0,
+                    "centroid": (0.0, 0.0, 0.0), "storey": {"id": "S1", "name": "Ground"}}],
+        "emergency_exits": [
+            {"id": "E_NORTH", "name": "North exit", "width_m": 1.0, "position": (0.0, 5.0, 0.0)},
+            {"id": "E_SOUTH", "name": "South exit", "width_m": 1.0, "position": (0.0, -5.0, 0.0)},
+            {"id": "E_EAST", "name": "East exit", "width_m": 1.0, "position": (5.0, 0.0, 0.0)},
+        ],
+        "door_space_links": {"E_NORTH": ["A"], "E_SOUTH": ["A"], "E_EAST": ["A"]},
+        "stairs": [],
+        "storeys": _ground_storey(),
+    }
+    classified = [{"guid": "A", "use_type": "living"}]
+
+    chosen = {next(s for s in ground_spaces(summary, classified)["spaces"]
+                   if s["guid"] == "A")["nearest_exit"] for _ in range(5)}
+    assert len(chosen) == 1
+
+
 def test_unreachable_space_is_flagged():
     summary = {
         "spaces": [{"id": "X", "name": "X", "long_name": "Living", "area": 12.0,

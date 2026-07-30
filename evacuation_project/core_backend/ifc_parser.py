@@ -253,6 +253,8 @@ def stairs(model, scale, settings):
             "name": stair.Name or "Normal Staircase",
             "width": width_m,
             "width_source": width_source,
+            # the only link back to this stair's rise/going in stair_flights()
+            "flight_ids": [f.GlobalId for f in flights],
             "position": get_position(stair, scale)
         })
     return results

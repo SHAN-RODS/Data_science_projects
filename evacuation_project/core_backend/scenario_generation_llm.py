@@ -13,7 +13,7 @@ from typing import List
 from pydantic import BaseModel, Field
 
 from core_backend.llm import select_llm
-from core_backend.egress import build_graph, ground_spaces, discount_exit
+from core_backend.egress import build_graph, ground_spaces, discount_exit, stair_adjacency
 from core_backend.occupancy import JURISDICTION_SOURCE
 from core_backend.ifc_parser import parser_summary
 from core_backend.space_classifier import classify_spaces
@@ -52,6 +52,52 @@ class ScenarioConditions(BaseModel):
                                              "not exceed the computed total occupant load")
 
 
+DISTRIBUTIONS = "constant, uniform, normal, lognormal"
+
+
+class PreMovement(BaseModel):
+    """Pre-travel activity time — how long occupants take to react before they start moving."""
+    distribution: str = Field(description=f"one of: {DISTRIBUTIONS}")
+    mean_s: float = Field(description="mean pre-movement time in seconds")
+    sd_s: float = Field(default=0.0, description="standard deviation in seconds (0 for constant)")
+    basis: str = Field(description="why these values for THIS building and THIS scenario — the "
+                                   "occupancy type, whether occupants may be asleep, and the alarm "
+                                   "arrangement you are assuming")
+
+
+class OccupantProfile(BaseModel):
+    """One population group: how big its people are and how fast they walk."""
+    name: str = Field(description="e.g. 'adult', 'child', 'reduced mobility'")
+    fraction: float = Field(description="share of the occupants in this group, 0..1; the fractions "
+                                        "across all profiles must sum to 1.0", ge=0, le=1)
+    speed_distribution: str = Field(description=f"one of: {DISTRIBUTIONS}")
+    speed_ms_mean: float = Field(description="mean unimpeded walking speed, m/s")
+    speed_ms_sd: float = Field(default=0.0, description="standard deviation, m/s (0 for constant)")
+    shoulder_width_m: float = Field(description="shoulder width / body diameter in metres")
+    basis: str = Field(description="why this group and these values suit this building")
+
+
+class OccupancyMultiplier(BaseModel):
+    """How a scenario's occupancy state scales the computed load for one use-type."""
+    use_type: str = Field(description="a use_type appearing in the space list, e.g. 'dwelling'")
+    multiplier: float = Field(description="0..1 — e.g. at night, commercial 0.0 and dwelling 1.0",
+                              ge=0, le=1)
+    reason: str
+
+
+class SimulationSetup(BaseModel):
+    """The egress-simulation parameters for this scenario. Unlike the occupant loads and travel
+    distances (which are computed and off-limits), these ARE yours to choose."""
+    movement_model: str = Field(description="'steering' (agent-based) or 'sfpe' (hydraulic)")
+    end_time_s: float = Field(description="how long to let the simulation run, seconds")
+    pre_movement: PreMovement
+    profiles: List[OccupantProfile] = Field(description="population mix; fractions must sum to 1.0")
+    occupancy_multipliers: List[OccupancyMultiplier] = Field(
+        default_factory=list,
+        description="how you scaled the computed occupant load to reach this scenario's "
+                    "occupants_total; omit or leave empty for a full-occupancy scenario")
+
+
 class ScenarioContent(BaseModel):
     id: str = Field(description="short id you assign, e.g. 'SCN-BASE', 'SCN-EXIT-BLOCKED'")
     type: str = Field(description="e.g. 'base_case', 'one_exit_discounted'")
@@ -63,6 +109,7 @@ class ScenarioContent(BaseModel):
     bottlenecks: List[str]
     risks: List[str]
     narrative: str
+    simulation: SimulationSetup
     regulatory_justification: str = Field(
         description="the regulation clause(s) this scenario tests, cited ONLY from the given references")
     ai_explanation: str = Field(
@@ -106,6 +153,27 @@ _SYSTEM = (
     "short plain-English narrative. occupants_total must be consistent with your occupant_distribution "
     "and must not exceed the computed total occupant load; if you reduce it (e.g. a night state), say so "
     "in that scenario's assumptions.\n\n"
+    "SIMULATION PARAMETERS — THESE ONES ARE YOURS TO CHOOSE.\n"
+    "The occupant loads and travel distances above are computed and off-limits. The `simulation` block "
+    "is different: it is the egress-simulation set-up, and you decide it per scenario. Give:\n"
+    "  * movement_model — 'steering' (agent-based, shows queueing and route choice) or 'sfpe' "
+    "(hydraulic flow); say which suits the scenario.\n"
+    "  * end_time_s — long enough that everyone who can escape has escaped.\n"
+    "  * pre_movement — the pre-travel activity time as a DISTRIBUTION, not a single number. Choose "
+    "values that fit this building's occupancy and whether occupants may be asleep, and state the alarm "
+    "arrangement you are assuming in `basis`. Typical engineering practice sits well under 30 minutes; "
+    "a sleeping residential occupancy warrants a longer and more spread-out time than an alert one.\n"
+    "  * profiles — the population mix (e.g. adults, children, reduced mobility), each with a walking "
+    "speed distribution and shoulder width. Unimpeded walking speeds for able adults on the level are "
+    "around 1.2 m/s and should stay inside 0.5-2.0 m/s; shoulder widths sit around 0.45-0.5 m. The "
+    "`fraction` values MUST sum to exactly 1.0.\n"
+    "  * occupancy_multipliers — if this scenario's occupants_total is lower than the computed total "
+    "occupant load, give the per-use_type multipliers that produce it (e.g. a night state might set "
+    "'commercial' to 0.0 and keep 'dwelling' at 1.0). These are applied per room downstream, so they "
+    "are how your reduced total actually gets placed in the building. Leave empty for full occupancy.\n"
+    "Every one of these carries a `basis` / `reason` field: state your engineering reasoning there. "
+    "These are the only numbers in the whole output you are permitted to originate — everything else "
+    "must still come verbatim from the computed facts.\n\n"
     "Also give, per scenario: regulatory_justification — the regulation clause(s) the scenario tests, "
     "cited ONLY from the REGULATION REFERENCES provided (use their ids and doc references; do not invent "
     "clause numbers); and ai_explanation — one or two sentences on why you chose this scenario and what "
@@ -280,6 +348,8 @@ def _spaces_block(grounded, classified):
             "use_type_source": c.get("use_type_source"),
             "storey": (s["storey"] or {}).get("name"),
             "area_m2": _round(s["area_m2"], 2),
+            # where a simulator seeds this room's occupants (metres, IFC world coords)
+            "centroid": [_round(v, 2) for v in s["centroid"]] if s["centroid"] else None,
             "occupant_load": s["occupant_load"],
             "occupant_basis": s["occupant_basis"],
             "nearest_exit": s["nearest_exit"],
@@ -291,14 +361,89 @@ def _spaces_block(grounded, classified):
     return out
 
 
+def _point(p):
+    """A position tuple as a plain JSON array of metres, or None."""
+    return [_round(v, 2) for v in p] if p else None
+
+
 def _exits_block(exits):
-    return [{"id": e["id"], "name": e.get("name"), "type": "final_exit", "width_m": _round(e.get("width_m"), 2)}
+    return [{"id": e["id"], "name": e.get("name"), "type": "final_exit",
+             "width_m": _round(e.get("width_m"), 2), "position": _point(e.get("position"))}
             for e in exits]
 
 
-def _circulation_block(stairs):
-    return [{"id": st["id"], "name": st.get("name"), "type": "internal_stair",
-             "width_m": _round(st.get("width"), 2)} for st in stairs]
+# an IfcStair's base and top are matched to storey elevations within this tolerance
+_STOREY_MATCH_TOL_M = 1.0
+
+
+def _circulation_block(summary):
+    """The IfcStair elements, enriched with the flight geometry and storey span an egress simulator
+    needs to rebuild the vertical connections (all of it already parsed, none of it exported before)."""
+    flights = {f["id"]: f for f in summary.get("stair_flights", [])}
+    storeys = summary.get("storeys", [])
+
+    def storey_at(z):
+        if z is None or not storeys:
+            return None
+        near = min(storeys, key=lambda s: abs(s["elevation_m"] - z))
+        return near["name"] if abs(near["elevation_m"] - z) <= _STOREY_MATCH_TOL_M else None
+
+    out = []
+    for st in summary.get("stairs", []):
+        mine = [flights[fid] for fid in st.get("flight_ids", []) if fid in flights]
+        rise = sum(f["rise_m"] for f in mine if f.get("rise_m")) or None
+        going = sum(f["going_m"] for f in mine if f.get("going_m")) or None
+        slope = sum(f["slope_m"] for f in mine if f.get("slope_m")) or None
+        position = st.get("position")
+        base_z = position[2] if position else None
+        spans = [storey_at(base_z), storey_at(base_z + rise) if (base_z is not None and rise) else None]
+        spans = list(dict.fromkeys(s for s in spans if s))      # de-dup, keep base-then-top order
+        out.append({
+            "id": st["id"], "name": st.get("name"), "type": "internal_stair",
+            "width_m": _round(st.get("width"), 2), "width_source": st.get("width_source"),
+            "position": _point(position),
+            "rise_m": _round(rise, 2), "going_m": _round(going, 2), "slope_m": _round(slope, 2),
+            "connects_storeys": spans,
+        })
+    return out
+
+
+def _stair_links_block(summary, classified):
+    """Stair spaces the egress graph joins vertically — the connectivity travel_distance actually
+    walked, so a simulator's own vertical links can be checked against it."""
+    use_type = {c["guid"]: c["use_type"] for c in classified}
+    storey_of = {s["id"]: (s["storey"] or {}).get("name") for s in summary["spaces"]}
+    return [{"space_a": a, "space_b": b, "storey_a": storey_of.get(a), "storey_b": storey_of.get(b)}
+            for a, b in stair_adjacency(summary["spaces"], use_type)]
+
+
+def _doors_block(summary, exits):
+    """Internal doors — the room-to-room connections. Final exits are excluded (they are in `exits`)."""
+    final = {e["id"] for e in exits}
+    links = summary.get("door_space_links", {})
+    return [{"id": d["id"], "name": d.get("name"), "type": "internal_door",
+             "width_m": _round(d.get("width_m"), 2), "position": _point(d.get("position")),
+             "connects": links.get(d["id"], [])}
+            for d in summary.get("doors", []) if d["id"] not in final]
+
+
+def _elevators_block(summary):
+    return [{"id": t["id"], "name": t.get("name"), "type": "elevator",
+             "is_evac_lift": t.get("is_evac_lift"), "position": _point(t.get("position"))}
+            for t in summary.get("elevators", [])]
+
+
+def _model_block(summary):
+    """How to line this object up with the geometry an egress simulator imports from the same IFC."""
+    return {
+        "source_ifc": summary.get("source_ifc"),
+        "units": "m",
+        # parser_summary builds spaces with use-world-coords=True, so every position/centroid here is
+        # already in the IFC's world frame — no re-projection needed on import.
+        "coordinate_system": "ifc_world_coordinates",
+        "geometry_note": ("geometry is NOT carried in this object — import the same IFC into the "
+                          "simulator and key on the IFC GlobalIds used throughout"),
+    }
 
 
 def _assemble_scenario(sc):
@@ -318,6 +463,7 @@ def _assemble_scenario(sc):
         "bottlenecks": sc.bottlenecks,
         "risks": sc.risks,
         "narrative": sc.narrative,
+        "simulation": sc.simulation.model_dump(),
         "regulatory_justification": sc.regulatory_justification,
         "ai_explanation": sc.ai_explanation,
     }
@@ -359,9 +505,13 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
             "llm_grounded": True,
             "llm_temperature": os.getenv("ANTHROPIC_TEMPERATURE", "0"),
         },
+        "model": _model_block(summary),
         "building": building,
         "exits": _exits_block(exits),
-        "circulation": _circulation_block(stairs),
+        "doors": _doors_block(summary, exits),
+        "circulation": _circulation_block(summary),
+        "stair_links": _stair_links_block(summary, classified),
+        "elevators": _elevators_block(summary),
         "spaces": _spaces_block(grounded, classified),
         "degraded_cases": degraded,
         "scenarios": [_assemble_scenario(sc) for sc in analysis.scenarios],

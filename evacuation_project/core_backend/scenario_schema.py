@@ -9,6 +9,17 @@ SCENARIO_SCHEMA = {
                  "scenarios", "validation", "not_assessed"],
     "properties": {
         "schema_version": {"type": "string"},
+        # How to line this object up with the geometry an egress simulator imports from the same IFC.
+        "model": {
+            "type": "object",
+            "required": ["units"],
+            "properties": {
+                "source_ifc": {"type": ["string", "null"]},
+                "units": {"type": "string"},
+                "coordinate_system": {"type": "string"},
+                "geometry_note": {"type": "string"},
+            },
+        },
         "provenance": {
             "type": "object",
             "required": ["generated_by_model", "distance_method", "llm_grounded"],
@@ -44,10 +55,48 @@ SCENARIO_SCHEMA = {
                     "name": {"type": ["string", "null"]},
                     "type": {"type": "string"},
                     "width_m": {"type": ["number", "null"]},
+                    "position": {"type": ["array", "null"]},
                 },
             },
         },
-        "circulation": {"type": "array"},
+        # Internal doors: the room-to-room connections a simulator rebuilds as door components.
+        "doors": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": ["string", "null"]},
+                    "type": {"type": "string"},
+                    "width_m": {"type": ["number", "null"]},
+                    "position": {"type": ["array", "null"]},
+                    "connects": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+        "circulation": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": ["string", "null"]},
+                    "type": {"type": "string"},
+                    "width_m": {"type": ["number", "null"]},
+                    "width_source": {"type": ["string", "null"]},
+                    "position": {"type": ["array", "null"]},
+                    "rise_m": {"type": ["number", "null"]},
+                    "going_m": {"type": ["number", "null"]},
+                    "slope_m": {"type": ["number", "null"]},
+                    "connects_storeys": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+        # Vertical links the egress graph actually walked (stair space <-> stair space).
+        "stair_links": {"type": "array"},
+        "elevators": {"type": "array"},
         "spaces": {
             "type": "array",
             "items": {
@@ -61,6 +110,7 @@ SCENARIO_SCHEMA = {
                     "use_type_source": {"type": ["string", "null"]},
                     "storey": {"type": ["string", "null"]},
                     "area_m2": {"type": ["number", "null"]},
+                    "centroid": {"type": ["array", "null"]},
                     "occupant_load": {"type": ["integer", "null"], "minimum": 0},
                     "occupant_basis": {"type": ["string", "null"]},
                     "nearest_exit": {"type": ["string", "null"]},
@@ -120,6 +170,56 @@ SCENARIO_SCHEMA = {
                     "bottlenecks": {"type": "array"},
                     "risks": {"type": "array"},
                     "narrative": {"type": "string"},
+                    # The egress-simulation set-up. These are the only AI-originated numbers in the
+                    # object, so each carries a basis/reason and is range-checked in validation.py.
+                    "simulation": {
+                        "type": "object",
+                        "required": ["movement_model", "pre_movement", "profiles"],
+                        "properties": {
+                            "movement_model": {"type": "string"},
+                            "end_time_s": {"type": "number", "minimum": 0},
+                            "pre_movement": {
+                                "type": "object",
+                                "required": ["distribution", "mean_s", "basis"],
+                                "properties": {
+                                    "distribution": {"type": "string"},
+                                    "mean_s": {"type": "number", "minimum": 0},
+                                    "sd_s": {"type": "number", "minimum": 0},
+                                    "basis": {"type": "string"},
+                                },
+                            },
+                            "profiles": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                    "type": "object",
+                                    "required": ["name", "fraction", "speed_ms_mean",
+                                                 "shoulder_width_m", "basis"],
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "fraction": {"type": "number", "minimum": 0, "maximum": 1},
+                                        "speed_distribution": {"type": "string"},
+                                        "speed_ms_mean": {"type": "number", "minimum": 0},
+                                        "speed_ms_sd": {"type": "number", "minimum": 0},
+                                        "shoulder_width_m": {"type": "number", "minimum": 0},
+                                        "basis": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "occupancy_multipliers": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["use_type", "multiplier"],
+                                    "properties": {
+                                        "use_type": {"type": "string"},
+                                        "multiplier": {"type": "number", "minimum": 0, "maximum": 1},
+                                        "reason": {"type": "string"},
+                                    },
+                                },
+                            },
+                        },
+                    },
                     "regulatory_justification": {"type": "string"},
                     "ai_explanation": {"type": "string"},
                 },

@@ -1,5 +1,7 @@
+import io
 import os
 import sys
+import zipfile
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
@@ -13,6 +15,8 @@ from core_backend.uk_regulation_checking import regulation_gate
 from core_backend.scenario_generation_llm import build_full_scenario
 from core_backend.validation import validate
 from core_backend.export_results import export_json, export_records, build_records
+from core_backend.pathfinder_export import (export_bundle, occupant_rows, component_rows,
+                                            scenario_occupancy)
 from core_backend.llm import select_llm
 
 load_dotenv()
@@ -274,3 +278,65 @@ st.download_button("Download JSON", data=records_json,
                    use_container_width=True)
 with st.expander("Full building object (reference — spaces, exits, gate, provenance)"):
     st.json(obj)
+
+st.divider()
+
+# ---- Pathfinder handoff ----
+st.subheader("Pathfinder handoff")
+st.caption("Import the **same IFC** into Pathfinder for the geometry. This bundle supplies what the "
+           "IFC cannot: how many occupants start in each room and where, which exits are open in each "
+           "scenario, and the profiles, behaviours and pre-movement times to run it with. Everything "
+           "is keyed on the IFC GlobalIds, in metres, in IFC world coordinates.")
+
+sim_issues = validation.get("simulation_parameter_issues", [])
+place_issues = validation.get("placement_issues", [])
+if sim_issues or place_issues:
+    st.warning(f"{len(sim_issues)} simulation-parameter issue(s) and {len(place_issues)} placement "
+               f"issue(s) — review before running the study.")
+    st.dataframe(sim_issues + place_issues, use_container_width=True, hide_index=True)
+else:
+    st.success("Simulation parameters in range; every occupant places into a reachable room with a goal.")
+
+occ_rows = occupant_rows(obj, scn)
+comp_rows = component_rows(obj, scn)
+placed_map, unplaced_map = scenario_occupancy(obj, scn)
+unplaced_total = sum(unplaced_map.values())
+
+p1, p2, p3, p4 = st.columns(4)
+p1.metric("Occupants placed", f"{len(occ_rows)} / {scn['conditions'].get('occupants_total')}")
+p2.metric("Rooms seeded", len(placed_map))
+p3.metric("Unplaced (no egress path)", unplaced_total)
+p4.metric("Components", len(comp_rows))
+if unplaced_total:
+    st.warning(f"{unplaced_total} occupant(s) sit in {len(unplaced_map)} room(s) with no traced "
+               f"egress path. They are reported in the bundle, not moved into rooms that can escape — "
+               f"the simulation will be short by that many people until those rooms are resolved.")
+
+sim = scn.get("simulation", {})
+if sim:
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Movement model", sim.get("movement_model"))
+    s2.metric("Pre-movement (mean)", f"{(sim.get('pre_movement') or {}).get('mean_s')} s")
+    s3.metric("Profiles", len(sim.get("profiles", [])))
+    with st.expander("Simulation parameters — AI-chosen for this scenario, each with its basis"):
+        st.markdown("**Pre-movement**")
+        st.json(sim.get("pre_movement", {}))
+        st.markdown("**Occupant profiles**")
+        st.dataframe(sim.get("profiles", []), use_container_width=True, hide_index=True)
+        if sim.get("occupancy_multipliers"):
+            st.markdown("**Occupancy multipliers** (how `occupants_total` was reached)")
+            st.dataframe(sim["occupancy_multipliers"], use_container_width=True, hide_index=True)
+
+with st.expander(f"{scn['id']} — occupants CSV preview (first 20 of {len(occ_rows)} rows)"):
+    st.dataframe(occ_rows[:20], use_container_width=True, hide_index=True)
+with st.expander(f"{scn['id']} — components CSV preview (doors, stairs, lifts and their state)"):
+    st.dataframe(comp_rows, use_container_width=True, hide_index=True)
+
+bundle = export_bundle(obj)
+zip_buffer = io.BytesIO()
+with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+    for filename, content in bundle.items():
+        archive.writestr(filename, content)
+st.download_button(f"Download Pathfinder bundle ({len(bundle)} files, all scenarios)",
+                   data=zip_buffer.getvalue(), file_name="pathfinder_bundle.zip",
+                   mime="application/zip", use_container_width=True)

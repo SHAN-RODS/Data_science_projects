@@ -10,6 +10,17 @@ EXIT_CAPACITY_PERSONS_PER_M = 200
 
 _NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 
+# The simulation block is the one place the model originates numbers rather than quoting computed ones,
+# so it is range-checked instead of fact-checked. These envelopes are deliberately wide — they exist to
+# catch a value that is not physically sensible, not to second-guess the engineering judgement.
+SPEED_RANGE_MS = (0.5, 2.0)
+SHOULDER_RANGE_M = (0.30, 0.70)
+PRE_MOVEMENT_RANGE_S = (0.0, 1800.0)
+END_TIME_RANGE_S = (60.0, 86400.0)
+ALLOWED_DISTRIBUTIONS = {"constant", "uniform", "normal", "lognormal", "log-normal", "log normal"}
+ALLOWED_MOVEMENT_MODELS = {"steering", "sfpe"}
+FRACTION_TOLERANCE = 0.01
+
 
 def _allowed_floats(obj):
     allowed = set()
@@ -33,6 +44,22 @@ def _allowed_floats(obj):
         add(c.get("occupants_total"))
         add(len(c.get("exits_available", [])))
         add(len(c.get("exits_discounted", [])))
+
+        # The simulation parameters are the model's own (range-checked below, not derived). A narrative
+        # that quotes them back is quoting itself consistently, so they belong in the allowed set --
+        # otherwise every scenario would report its own pre-movement time as an ungrounded number.
+        sim = scn.get("simulation") or {}
+        add(sim.get("end_time_s"))
+        pre = sim.get("pre_movement") or {}
+        add(pre.get("mean_s"))
+        add(pre.get("sd_s"))
+        for profile in sim.get("profiles") or []:
+            add(profile.get("speed_ms_mean"))
+            add(profile.get("speed_ms_sd"))
+            add(profile.get("shoulder_width_m"))
+            add(profile.get("fraction"))
+        for m in sim.get("occupancy_multipliers") or []:
+            add(m.get("multiplier"))
 
     # Degraded-case figures are computed the same way as the base case and handed to the model, so a
     # narrative quoting them is grounded — without this they would read as invented.
@@ -96,6 +123,102 @@ def number_factcheck(obj):
                 ungrounded.append({"scenario": scn["id"], "value": token})
     return ungrounded
 
+def _in_range(value, bounds):
+    lo, hi = bounds
+    return isinstance(value, (int, float)) and lo <= value <= hi
+
+
+def simulation_parameter_issues(obj):
+    """Range/consistency problems in the AI-chosen simulation parameters.
+
+    These are the only numbers in the object the model originates, so ``number_factcheck`` cannot
+    ground them against anything. This is the substitute: a wide physical envelope, plus the rule that
+    every one of them must carry a written basis.
+    """
+    issues = []
+    for scn in obj.get("scenarios", []):
+        sid = scn.get("id")
+        sim = scn.get("simulation")
+        if not sim:
+            issues.append({"scenario": sid, "issue": "no simulation parameters given"})
+            continue
+
+        model = str(sim.get("movement_model", "")).strip().lower()
+        if model not in ALLOWED_MOVEMENT_MODELS:
+            issues.append({"scenario": sid, "field": "movement_model",
+                           "issue": f"{sim.get('movement_model')!r} is not one of "
+                                    f"{sorted(ALLOWED_MOVEMENT_MODELS)}"})
+        if sim.get("end_time_s") is not None and not _in_range(sim["end_time_s"], END_TIME_RANGE_S):
+            issues.append({"scenario": sid, "field": "end_time_s",
+                           "issue": f"{sim['end_time_s']} s outside {END_TIME_RANGE_S}"})
+
+        pre = sim.get("pre_movement") or {}
+        if not _in_range(pre.get("mean_s"), PRE_MOVEMENT_RANGE_S):
+            issues.append({"scenario": sid, "field": "pre_movement.mean_s",
+                           "issue": f"{pre.get('mean_s')} s outside {PRE_MOVEMENT_RANGE_S}"})
+        if str(pre.get("distribution", "")).strip().lower() not in ALLOWED_DISTRIBUTIONS:
+            issues.append({"scenario": sid, "field": "pre_movement.distribution",
+                           "issue": f"{pre.get('distribution')!r} is not a recognised distribution"})
+        if not str(pre.get("basis") or "").strip():
+            issues.append({"scenario": sid, "field": "pre_movement.basis", "issue": "no basis given"})
+
+        profiles = sim.get("profiles") or []
+        if not profiles:
+            issues.append({"scenario": sid, "field": "profiles", "issue": "no occupant profiles given"})
+        for p in profiles:
+            name = p.get("name")
+            if not _in_range(p.get("speed_ms_mean"), SPEED_RANGE_MS):
+                issues.append({"scenario": sid, "field": f"profiles[{name}].speed_ms_mean",
+                               "issue": f"{p.get('speed_ms_mean')} m/s outside {SPEED_RANGE_MS}"})
+            if not _in_range(p.get("shoulder_width_m"), SHOULDER_RANGE_M):
+                issues.append({"scenario": sid, "field": f"profiles[{name}].shoulder_width_m",
+                               "issue": f"{p.get('shoulder_width_m')} m outside {SHOULDER_RANGE_M}"})
+            if str(p.get("speed_distribution", "")).strip().lower() not in ALLOWED_DISTRIBUTIONS:
+                issues.append({"scenario": sid, "field": f"profiles[{name}].speed_distribution",
+                               "issue": f"{p.get('speed_distribution')!r} is not recognised"})
+            if not str(p.get("basis") or "").strip():
+                issues.append({"scenario": sid, "field": f"profiles[{name}].basis",
+                               "issue": "no basis given"})
+        if profiles:
+            total = sum(float(p.get("fraction") or 0) for p in profiles)
+            if abs(total - 1.0) > FRACTION_TOLERANCE:
+                issues.append({"scenario": sid, "field": "profiles[].fraction",
+                               "issue": f"fractions sum to {total:.3f}, not 1.0"})
+    return issues
+
+
+def placement_issues(obj):
+    """Whether every occupant this study asks for can actually be placed and given a goal."""
+    from core_backend.pathfinder_export import scenario_occupancy
+
+    space_by_guid = {s["guid"]: s for s in obj.get("spaces", [])}
+    issues = []
+    for scn in obj.get("scenarios", []):
+        sid = scn.get("id")
+        target = (scn.get("conditions") or {}).get("occupants_total") or 0
+        allocation, unplaced = scenario_occupancy(obj, scn)
+        placed, missing = sum(allocation.values()), sum(unplaced.values())
+
+        # the allocation itself must conserve people, whether or not they can all be seeded
+        if target and placed + missing != target:
+            issues.append({"scenario": sid, "field": "occupants_total",
+                           "issue": f"allocation accounts for {placed + missing} of {target} "
+                                    f"occupant(s) — the split does not conserve the total"})
+        if missing:
+            issues.append({"scenario": sid, "field": "occupancy.unplaced_rooms",
+                           "issue": f"{missing} of {target} occupant(s) sit in {len(unplaced)} "
+                                    f"room(s) with no traced egress path and cannot be simulated",
+                           "rooms": sorted(unplaced)[:5]})
+        # reachability comes from the geodesic engine, nearest_exit from the egress graph -- a room can
+        # be measured as reachable yet have no exit id to aim its occupants at
+        goalless = sorted(g for g in allocation if not space_by_guid[g].get("nearest_exit"))
+        if goalless:
+            issues.append({"scenario": sid, "field": "behavior",
+                           "issue": f"{len(goalless)} seeded room(s) have no nearest_exit to aim at",
+                           "rooms": goalless[:5]})
+    return issues
+
+
 def validate(obj):
     validator = Draft202012Validator(SCENARIO_SCHEMA)
     schema_errors = [f"{'/'.join(str(p) for p in e.path)}: {e.message}"
@@ -119,6 +242,12 @@ def validate(obj):
 
     ungrounded = number_factcheck(obj)
 
+    # Objects generated before the simulation block existed carry no parameters to check; report the
+    # two invariants as None rather than failing them.
+    has_sim = any(scn.get("simulation") for scn in obj["scenarios"])
+    sim_issues = simulation_parameter_issues(obj) if has_sim else []
+    place_issues = placement_issues(obj) if has_sim else []
+
     obj["validation"] = {
         "schema_valid": not schema_errors,
         "schema_errors": schema_errors,
@@ -128,10 +257,15 @@ def validate(obj):
             "occupant_totals_reconcile": reconcile,
             "occupants_within_exit_capacity": within_capacity,
             "travel_distance_non_negative": dist_ok,
+            # simulation-input checks; None when the object carries no simulation block at all
+            "simulation_parameters_in_range": (not sim_issues) if has_sim else None,
+            "every_occupant_placed_with_a_goal": (not place_issues) if has_sim else None,
         },
         "exit_capacity_persons": round(capacity),
         "number_factcheck": "passed" if not ungrounded else "review",
         "ungrounded_numbers": ungrounded,
+        "simulation_parameter_issues": sim_issues,
+        "placement_issues": place_issues,
         "not_assessed_count": len(obj.get("not_assessed", [])),
     }
     return obj
@@ -165,4 +299,6 @@ if __name__ == "__main__":
           f"(total occupants: {obj['building']['total_occupant_load']})")
     print(f"number_factcheck: {v['number_factcheck']}  "
           f"ungrounded: {v['ungrounded_numbers'][:8]}")
+    print(f"simulation_parameter_issues: {v['simulation_parameter_issues'][:5]}")
+    print(f"placement_issues: {v['placement_issues'][:5]}")
     print(f"not_assessed_count: {v['not_assessed_count']}")

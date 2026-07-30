@@ -33,6 +33,24 @@ def _nearest_storey_height(z, storeys):
     return min(storeys, key=lambda s: abs(s["elevation_m"] - z))["height_above_ground_m"]
 
 
+def stair_adjacency(spaces, use_type):
+    """Stair spaces that sit above/below each other close enough to be one shaft -> [(id_a, id_b), ...].
+
+    Shared by build_graph and the Pathfinder export so the geometry rule (STAIR_MAX_DZ_M /
+    STAIR_MAX_DXY_M) is stated in exactly one place.
+    """
+    stair_spaces = [sp for sp in spaces
+                    if use_type.get(sp["id"]) == "stair" and sp["centroid"] is not None]
+    pairs = []
+    for i in range(len(stair_spaces)):
+        for j in range(i + 1, len(stair_spaces)):
+            a, b = stair_spaces[i]["centroid"], stair_spaces[j]["centroid"]
+            dz = abs(a[2] - b[2])
+            if 0.1 < dz <= STAIR_MAX_DZ_M and _horizontal(a, b) <= STAIR_MAX_DXY_M:
+                pairs.append((stair_spaces[i]["id"], stair_spaces[j]["id"]))
+    return pairs
+
+
 def build_graph(summary, classified, discounted_exits=frozenset()):
     spaces = {sp["id"]: sp for sp in summary["spaces"]}
     use_type = {c["guid"]: c["use_type"] for c in classified}
@@ -71,26 +89,32 @@ def build_graph(summary, classified, discounted_exits=frozenset()):
                     adjacency[bounded[i]].add(bounded[j])
                     adjacency[bounded[j]].add(bounded[i])
  
-    stair_spaces = [sp for sp in summary["spaces"]
-                    if use_type.get(sp["id"]) == "stair" and sp["centroid"] is not None]
-    for i in range(len(stair_spaces)):
-        for j in range(i + 1, len(stair_spaces)):
-            a, b = stair_spaces[i]["centroid"], stair_spaces[j]["centroid"]
-            dz = abs(a[2] - b[2])
-            if 0.1 < dz <= STAIR_MAX_DZ_M and _horizontal(a, b) <= STAIR_MAX_DXY_M:
-                adjacency[stair_spaces[i]["id"]].add(stair_spaces[j]["id"])
-                adjacency[stair_spaces[j]["id"]].add(stair_spaces[i]["id"])
+    for a_id, b_id in stair_adjacency(summary["spaces"], use_type):
+        adjacency[a_id].add(b_id)
+        adjacency[b_id].add(a_id)
 
     return adjacency, positions, final_exits
 
 
+def _node_key(node):
+    """Stable sort key over the graph's mixed node types: space-id / OUTSIDE strings and
+    ("EXIT", door_id) tuples."""
+    return (1, node[0], node[1]) if isinstance(node, tuple) else (0, node, "")
+
+
 def _bfs_prev(start, adjacency):
-    """BFS predecessor tree from start over the adjacency graph."""
+    """BFS predecessor tree from start over the adjacency graph.
+
+    Neighbours are visited in a sorted order, not set order. Adjacency is built from sets, whose
+    iteration order for strings changes with the interpreter's hash seed — leaving that unsorted made
+    equidistant exits tie-break differently between runs, so the same model could report a different
+    nearest_exit (and a different fallback distance) each time it was parsed.
+    """
     prev = {start: None}
     queue = deque([start])
     while queue:
         node = queue.popleft()
-        for neighbour in adjacency[node]:
+        for neighbour in sorted(adjacency[node], key=_node_key):
             if neighbour not in prev:
                 prev[neighbour] = node
                 queue.append(neighbour)
@@ -177,6 +201,8 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
             "use_type": ut,
             "storey": sp["storey"],
             "area_m2": sp["area"],
+            # (x, y, z) in metres, IFC world coords — the occupant seed point for an egress simulator
+            "centroid": sp["centroid"],
             "occupant_load": occ["occupant_load"],
             "occupant_basis": occ["occupant_basis"],
             "nearest_exit": exit_id,
