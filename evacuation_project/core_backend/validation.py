@@ -34,6 +34,14 @@ def _allowed_floats(obj):
         add(len(c.get("exits_available", [])))
         add(len(c.get("exits_discounted", [])))
 
+    # Degraded-case figures are computed the same way as the base case and handed to the model, so a
+    # narrative quoting them is grounded — without this they would read as invented.
+    for case in obj.get("degraded_cases", []):
+        for row in case.get("per_storey", []):
+            add(row.get("occupants"))
+            add(row.get("max_travel_distance_m"))
+            add(row.get("unreachable"))
+
     by_storey_occ = defaultdict(int)
     by_storey_dist = defaultdict(float)
     for s in obj["spaces"]:

@@ -1,3 +1,4 @@
+
 #JSON Schema for the whole-building evacuation scenarios.
 
 SCENARIO_SCHEMA = {
@@ -64,14 +65,38 @@ SCENARIO_SCHEMA = {
                     "occupant_basis": {"type": ["string", "null"]},
                     "nearest_exit": {"type": ["string", "null"]},
                     "travel_distance_m": {"type": ["number", "null"], "minimum": 0},
-                    "travel_distance_basis": {"type": ["string", "null"]},
+                    "travel_distance_method": {"type": ["string", "null"]},
+                    "most_remote_point": {"type": ["array", "null"]},
                     "reachable": {"type": "boolean"},
+                },
+            },
+        },
+        "degraded_cases": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["exit_discounted", "per_storey"],
+                "properties": {
+                    "exit_discounted": {"type": "string"},
+                    "method": {"type": "string"},
+                    "per_storey": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "storey": {"type": ["string", "null"]},
+                                "occupants": {"type": "integer", "minimum": 0},
+                                "max_travel_distance_m": {"type": ["number", "null"], "minimum": 0},
+                                "unreachable": {"type": "integer", "minimum": 0},
+                            },
+                        },
+                    },
                 },
             },
         },
         "scenarios": {
             "type": "array",
-            "minItems": 2,   
+            "minItems": 2,
             "items": {
                 "type": "object",
                 "required": ["id", "type", "conditions", "narrative"],

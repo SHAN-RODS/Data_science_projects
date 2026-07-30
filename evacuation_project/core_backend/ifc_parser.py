@@ -8,6 +8,7 @@ from collections import defaultdict
 import sys
 from core_backend.sample_paths import resolve_ifc
 
+
 def find_property(psets, keys):
     for pset in psets.values():
         for key in keys:

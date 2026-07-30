@@ -38,9 +38,9 @@ except Exception:
 # header
 st.title("NLP Assisted Evacuation Scenario Generator")
 st.caption(
-    "Upload an IFC/BIM model. The building is first checked against the selected regulation (pass/fail); "
-    "only if it passes does the AI generate a whole-building evacuation scenario set — occupancy, "
-    "distances and the scenario conditions are all decided by the AI in a single grounded call."
+    "Upload an IFC/BIM model. The building is first checked against the selected regulation (pass/fail) "
+    "and later gives the AI generated scenarios."
+    
 )
 st.caption(f"The Scenario reasoning model used: {model_label}")
 st.divider()
@@ -58,7 +58,7 @@ with st.sidebar:
 
     if uploaded_file is not None:
         st.success(f"Ready: {uploaded_file.name}")
-        if st.button("Check building against regulation", type="primary", use_container_width=True):
+        if st.button("Validate", type="primary", use_container_width=True):
             save_path = os.path.join("uploads", uploaded_file.name)
             with open(save_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
@@ -80,8 +80,8 @@ with st.sidebar:
         st.divider()
         st.caption("Building passed — generation unlocked.")
         if st.button("Generate scenarios", type="primary", use_container_width=True):
-            with st.spinner("Classifying spaces with AI · generating occupancy, distances & scenarios "
-                            "in one AI call…"):
+            with st.spinner("Classifying spaces with AI · computing occupancy & travel distances · "
+                            "generating the scenarios in one AI call…"):
                 obj = validate(build_full_scenario(st.session_state.ifc_path,
                                                    jurisdiction=jurisdiction, gate=gate))
             st.session_state.scenario_object = obj
@@ -107,10 +107,10 @@ def render_gate(gate, label):
     st.subheader("Step 1 — Regulation check")
     n_viol, n_mr = len(gate["violations"]), len(gate["manual_review"])
     if gate["passed"]:
-        st.success(f"✅ PASS — {label}: no threshold violations found "
+        st.success(f"PASS — {label}: no threshold violations found "
                    f"({n_mr} manual-review item(s), non-blocking).")
     else:
-        st.error(f"❌ FAIL — {label}: {n_viol} violation(s). Scenario generation is blocked "
+        st.error(f"FAIL — {label}: {n_viol} violation(s). Scenario generation is blocked "
                  f"until the building passes.")
     if gate["violations"]:
         st.markdown("**Violations (block generation)**")
@@ -140,9 +140,9 @@ if gate is None:
             "a clear PASS/FAIL. Generation is blocked unless it passes.")
     c3.info("**3. Classifier (AI)-**\nA dictionary resolves clear room labels and the LLM handles the "
             "messy, multilingual ones.")
-    c4.info("**4. Generate (AI)-**\nOne grounded AI call decides occupancy, travel distances AND the "
-            "scenario set (how many people, which exits open/closed) — then writes routes, bottlenecks, "
-            "risks and a narrative.")
+    c4.info("**4. Compute, then generate (AI)-**\nOccupant loads and travel distances are computed from "
+            "the geometry. One grounded AI call then decides the scenario set (which exits open/closed) "
+            "and writes routes, bottlenecks, risks and a narrative from those numbers.")
     st.stop()
 
 # Step 1 verdict — always shown once a check has run
@@ -195,7 +195,7 @@ m5.metric("Spaces", len(obj.get("spaces", [])))
 
 rollup = _per_storey_occupants(obj["spaces"])
 if any(rollup.values()):
-    st.caption("Occupant load by storey (AI-estimated)")
+    st.caption("Occupant load by storey (computed from code floor-space factors)")
     st.bar_chart(pd.DataFrame({"occupants": rollup}))
 
 not_assessed = obj.get("not_assessed", [])
@@ -257,8 +257,8 @@ if scn.get("routes"):
 
 st.divider()
 
-with st.expander(f"Spaces ({len(obj['spaces'])}) — use-type, occupant load, nearest exit, travel distance "
-                 f"(all AI-estimated)"):
+with st.expander(f"Spaces ({len(obj['spaces'])}) — occupant load, nearest exit and travel distance are "
+                 f"computed; use-type is AI-classified"):
     st.dataframe(obj["spaces"], use_container_width=True, hide_index=True)
 
 st.divider()
