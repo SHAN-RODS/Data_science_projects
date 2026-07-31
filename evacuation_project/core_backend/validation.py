@@ -188,27 +188,47 @@ def simulation_parameter_issues(obj):
 
 
 def placement_issues(obj):
-    """Whether every occupant this study asks for can actually be placed and given a goal."""
-    from core_backend.pathfinder_export import scenario_occupancy
+    """Whether every occupant this study asks for can actually be placed and given a goal.
+
+    The allocation is recomputed here rather than read from ``scenario["occupancy"]``: recomputing is
+    what makes this a check, and it also catches a stored block that has gone stale or been hand-edited.
+    """
+    from core_backend.occupant_placement import scenario_occupancy
 
     space_by_guid = {s["guid"]: s for s in obj.get("spaces", [])}
     issues = []
     for scn in obj.get("scenarios", []):
         sid = scn.get("id")
         target = (scn.get("conditions") or {}).get("occupants_total") or 0
-        allocation, unplaced = scenario_occupancy(obj, scn)
+        allocation, unplaced, unallocated = scenario_occupancy(obj, scn)
         placed, missing = sum(allocation.values()), sum(unplaced.values())
 
+        stored = scn.get("occupancy")
+        if stored and stored.get("placed_total") != placed:
+            issues.append({"scenario": sid, "field": "occupancy.placed_total",
+                           "issue": f"the stored occupancy block places {stored.get('placed_total')} "
+                                    f"occupant(s) but the allocation recomputes to {placed} — the "
+                                    f"block is stale or was edited by hand"})
+
         # the allocation itself must conserve people, whether or not they can all be seeded
-        if target and placed + missing != target:
+        if target and placed + missing + unallocated != target:
             issues.append({"scenario": sid, "field": "occupants_total",
-                           "issue": f"allocation accounts for {placed + missing} of {target} "
-                                    f"occupant(s) — the split does not conserve the total"})
+                           "issue": f"allocation accounts for {placed + missing + unallocated} of "
+                                    f"{target} occupant(s) — the split does not conserve the total"})
         if missing:
             issues.append({"scenario": sid, "field": "occupancy.unplaced_rooms",
                            "issue": f"{missing} of {target} occupant(s) sit in {len(unplaced)} "
                                     f"room(s) with no traced egress path and cannot be simulated",
                            "rooms": sorted(unplaced)[:5]})
+        # the AI sets occupants_total; its own multipliers set what the rooms hold. When the first
+        # exceeds the second, the difference has nowhere to go that would not overfill a room.
+        if unallocated:
+            capacity = target - unallocated
+            issues.append({"scenario": sid, "field": "occupancy.unallocated_total",
+                           "issue": f"occupants_total is {target} but this scenario's occupancy "
+                                    f"multipliers leave rooms holding only {capacity} — "
+                                    f"{unallocated} occupant(s) could not be allocated without "
+                                    f"putting rooms over their computed load"})
         # reachability comes from the geodesic engine, nearest_exit from the egress graph -- a room can
         # be measured as reachable yet have no exit id to aim its occupants at
         goalless = sorted(g for g in allocation if not space_by_guid[g].get("nearest_exit"))

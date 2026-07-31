@@ -16,6 +16,7 @@ from core_backend.llm import select_llm
 from core_backend.egress import build_graph, ground_spaces, discount_exit, stair_adjacency
 from core_backend.occupancy import JURISDICTION_SOURCE
 from core_backend.ifc_parser import parser_summary
+from core_backend.occupant_placement import attach_occupancy
 from core_backend.space_classifier import classify_spaces
 from core_backend.uk_regulation_checking import regulation_gate, load_regs
 from core_backend.sample_paths import resolve_ifc
@@ -493,7 +494,7 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
 
     analysis = llm.with_structured_output(BuildingAnalysis).invoke(prompt)
 
-    return {
+    obj = {
         "schema_version": "1.0",
         "provenance": {
             "generated_by_model": model_label,
@@ -519,6 +520,10 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
         "validation": {},
         "not_assessed": grounded["not_assessed"],
     }
+
+    # Deterministic post-pass: spread each scenario's occupants over the rooms and give them a goal.
+    # It needs both `spaces` and the AI's scenarios, so it can only run on the assembled object.
+    return attach_occupancy(obj)
 
 
 def build_full_scenario(ifc_path, jurisdiction="england", use_llm=True, gate=None):

@@ -220,6 +220,70 @@ SCENARIO_SCHEMA = {
                             },
                         },
                     },
+                    # Where this scenario's occupants start: computed deterministically from the
+                    # per-room occupant load and the AI's multipliers (occupant_placement.py), not
+                    # asked of the model. Optional so objects generated before it existed still pass.
+                    "occupancy": {
+                        "type": "object",
+                        "properties": {
+                            "occupants_total": {"type": ["integer", "null"], "minimum": 0},
+                            "occupancy_state": {"type": ["string", "null"]},
+                            "placed_total": {"type": "integer", "minimum": 0},
+                            "unplaced_total": {"type": "integer", "minimum": 0},
+                            # occupants_total minus what the scenario's own multipliers leave room for
+                            "unallocated_total": {"type": "integer", "minimum": 0},
+                            "unallocated_why": {"type": ["string", "null"]},
+                            "scenario_room_capacity": {"type": "integer", "minimum": 0},
+                            "building_computed_total": {"type": ["integer", "null"], "minimum": 0},
+                            "allocation_method": {"type": "string"},
+                            "position_note": {"type": "string"},
+                            "by_room": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["guid", "occupants", "goal"],
+                                    "properties": {
+                                        "guid": {"type": "string"},
+                                        "name": {"type": ["string", "null"]},
+                                        "storey": {"type": ["string", "null"]},
+                                        "use_type": {"type": ["string", "null"]},
+                                        "computed_occupant_load": {"type": ["integer", "null"],
+                                                                   "minimum": 0},
+                                        "occupants": {"type": "integer", "minimum": 1},
+                                        # the room centroid, in metres, IFC world coordinates
+                                        "seed_point": {"type": ["array", "null"]},
+                                        "profiles": {"type": "object"},
+                                        "goal": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "unplaced_rooms": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["guid", "occupants_not_placed", "why"],
+                                    "properties": {
+                                        "guid": {"type": "string"},
+                                        "name": {"type": ["string", "null"]},
+                                        "storey": {"type": ["string", "null"]},
+                                        "use_type": {"type": ["string", "null"]},
+                                        "computed_occupant_load": {"type": ["integer", "null"],
+                                                                   "minimum": 0},
+                                        "occupants_not_placed": {"type": "integer", "minimum": 1},
+                                        "why": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "rerouted_rooms": {
+                                "type": "object",
+                                "properties": {
+                                    "count": {"type": "integer", "minimum": 0},
+                                    "guids": {"type": "array", "items": {"type": "string"}},
+                                    "why": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
                     "regulatory_justification": {"type": "string"},
                     "ai_explanation": {"type": "string"},
                 },
