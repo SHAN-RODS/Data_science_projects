@@ -38,6 +38,13 @@ GROUND_TOL_M = 0.5           # a storey within this of entrance level is "ground
 DEFAULT_PITCH_K = 2.0        # walked stair length per metre of rise, if no flight geometry (~30 deg)
 NON_WALKABLE = {"measurement_zone", "plant"}   # overlays / shafts — not part of the walkable network
 
+# A door's placement point is not reliably on the centreline of the wall it sits in, so a fixed disc
+# often fails to reach one of the rooms the door demonstrably bounds and the two stay disconnected.
+# Where the reach is short, a door-anchored connector is run out to the room instead. The tolerance is
+# a wall thickness plus the body clearance taken off each side; connectors that would cross a third
+# room are refused, so this can never tunnel a route through an intervening space.
+BRIDGE_TOL_M = 0.6
+
 METHOD = "geodesic_grid"
 
 
@@ -159,13 +166,33 @@ def _door_portal(x, y, width_m):
     return shapely.Point(x, y).buffer(r)
 
 
-def compute_travel_distances(summary, classified, final_exits, discounted=frozenset()):
+def _connector(portal, x, y, inset, width_m, obstacles):
+    """A door-anchored bridge from ``portal`` out to ``inset``, or None if it should not be made.
+
+    Returns None when the portal already reaches the room, when the room is further away than
+    ``BRIDGE_TOL_M`` (that is over-linking by the hosting-wall rule, not placement slop), or when the
+    bridge would cross a room this door does not bound -- a route through an unrelated space is not a
+    doorway. ``obstacles`` should therefore exclude the other rooms this same door links.
+    """
+    if portal.intersects(inset) or inset.distance(portal) > BRIDGE_TOL_M:
+        return None
+    spine = shapely.shortest_line(shapely.Point(x, y), inset)
+    if any(spine.intersects(other) for other in obstacles):
+        return None
+    return spine.buffer(max((width_m or 0) / 2.0, PORTAL_RADIUS_MIN_M))
+
+
+def compute_travel_distances(summary, classified, final_exits, discounted=frozenset(), report=None):
     """Geodesic travel distance per space guid.
 
     ``final_exits`` is egress's ground-level exit dict (door_id -> {position, ...}). Returns
-    ``{guid: {travel_distance_m, method, most_remote_point, reachable}}`` for every walkable room the
-    engine could place on a storey; rooms it cannot measure are omitted (caller keeps its fallback).
+    ``{guid: {travel_distance_m, method, most_remote_point, reachable, reason}}`` for every walkable
+    room the engine could place on a storey; rooms it cannot measure are omitted (caller keeps its
+    fallback). Pass a dict as ``report`` to receive what the engine could not do: door/room pairs no
+    portal could bridge, and storeys it never managed to seed.
     """
+    report = report if report is not None else {}
+    skipped = {}
     spaces = [s for s in summary["spaces"] if s.get("footprint") is not None]
     use_by_id = {c["guid"]: c["use_type"] for c in classified}
     door_by_id = {d["id"]: d for d in summary.get("doors", [])}
@@ -186,9 +213,15 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
             continue
         by_storey.setdefault(storey_id(s), []).append(s)
 
+    # one inset per room, reused by the door pass, the ground field and every measure_storey call
+    insets = {s["id"]: _inset(s["footprint"]) for rooms in by_storey.values() for s in rooms}
+    insets_on_storey = {st: [insets[s["id"]] for s in rooms] for st, rooms in by_storey.items()}
+    room_ids_on_storey = {st: [s["id"] for s in rooms] for st, rooms in by_storey.items()}
+
     # doors per storey (by the storeys of the rooms they link) + per-door linked use-types
     doors_on_storey = {}
     door_stair_side = {}    # door_id -> stair space it enters (if any), on that storey
+    unbridged = {}          # storey -> count of (door, room) pairs the portal could not reach
     for door_id, linked in links.items():
         linked = [sid for sid in linked if sid in space_by_id]
         if not linked:
@@ -203,6 +236,21 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
         for sid in linked:
             st = storey_id(space_by_id[sid])
             doors_on_storey.setdefault(st, []).append(portal)
+            # the door's placement point is often off the wall centreline, so the disc alone can miss
+            # a room this door demonstrably bounds; run a door-width connector out to it where the
+            # reach is short enough to be placement slop rather than hosting-wall over-linking
+            inset = insets.get(sid)
+            if inset is None:
+                continue
+            # rooms this same door also bounds are not obstacles -- a door displaced into the room
+            # next door has to reach back across it, and that is the doorway, not a shortcut
+            obstacles = [insets[other] for other in room_ids_on_storey.get(st, [])
+                         if other not in linked]
+            bridge = _connector(portal, pos[0], pos[1], inset, width, obstacles)
+            if bridge is not None:
+                doors_on_storey[st].append(bridge)
+            elif not portal.intersects(inset):
+                unbridged[st] = unbridged.get(st, 0) + 1
         # a room->stair door is a stair-entry seed on the stair space's storey
         if stair_sides and non_stair:
             for stair_sid in stair_sides:
@@ -218,7 +266,7 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
     if ground_ids:
         walk_geoms, seeds = [], []
         for sid in ground_ids:
-            walk_geoms += [_inset(s["footprint"]) for s in by_storey[sid]]
+            walk_geoms += insets_on_storey.get(sid, [])
             walk_geoms += doors_on_storey.get(sid, [])
         for ex in final_exits.values():
             if ex["id"] in discounted:
@@ -232,7 +280,6 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
     results = {}
 
     def measure_storey(sid, field):
-        insets = {s["id"]: _inset(s["footprint"]) for s in by_storey[sid]}
         for s in by_storey[sid]:
             dist, point = field.room_distance(insets[s["id"]])
             reachable = dist is not None and math.isfinite(dist)
@@ -242,6 +289,11 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
                 # a plain [x, y] list (JSON array) — a tuple would fail the schema's "array" check
                 "most_remote_point": [round(point[0], 2), round(point[1], 2)] if point else None,
                 "reachable": reachable,
+                # why the engine could not measure it, so a failure is diagnosable from the record
+                "reason": None if reachable else (
+                    "room is a disconnected part of the walkable network — no door bridged it"
+                    if dist is not None else
+                    "room footprint placed no cell on the storey raster"),
             }
 
     # ground storeys
@@ -265,8 +317,15 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
                 seeds.append((portal, descent + ground_portion))
         if not seeds:
             continue
-        walk_geoms = [_inset(s["footprint"]) for s in rooms] + doors_on_storey.get(sid, [])
+        walk_geoms = insets_on_storey.get(sid, []) + doors_on_storey.get(sid, [])
         field = _Field(shapely.union_all(walk_geoms + [g for g, _ in seeds]), seeds)
         measure_storey(sid, field)
 
+    # storeys the engine never got to seed at all — the caller keeps its fallback for these, but the
+    # gap should be visible rather than silent
+    for sid in by_storey:
+        if not any(s["id"] in results for s in by_storey[sid]):
+            skipped[sid] = len(by_storey[sid])
+
+    report.update({"unbridged_door_room_pairs": unbridged, "storeys_not_measured": skipped})
     return results

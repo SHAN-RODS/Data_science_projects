@@ -1,14 +1,16 @@
 #This is the core part of the project where it creates the whole building evacuation scenarios having the
-#routes, bottlenecks, risks, assumptions and a narrative. Occupancy and travel distance are COMPUTED
-#deterministically (occupancy.py + travel_distance.py, joined by egress.ground_spaces) and handed to the
-#model as facts; the AI only decides WHICH scenarios are worth generating and writes them up, in a SINGLE
-#structured API call. Regulation pass/fail is a separate blocking gate (see uk_regulation_checking).
+#relevant IFC elements, regulatory justification, an AI explanation and structured scenario inputs
+#(fire scenario, occupancy, escape strategy, occupant behaviour, engineering assumptions). Occupancy and
+#travel distance are COMPUTED deterministically (occupancy.py + travel_distance.py, joined by
+#egress.ground_spaces) and handed to the model as facts; the AI only decides WHICH scenarios are worth
+#generating and writes them up, in a SINGLE structured API call. Regulation pass/fail is a separate
+#blocking gate (see uk_regulation_checking).
 
 import os
 import sys
 from collections import Counter
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -35,35 +37,15 @@ def _round(value, ndigits):
 
 
 # ---------------------------------------------------------------------------------------------------
-# What the single API call returns: the AI-chosen scenario set. The numbers are NOT the model's job.
+# What the single API call returns: the AI-chosen scenario set, in the SCN-001 shape.
+# The numbers (occupant loads, travel distances) are NOT the model's job — see _SYSTEM below.
 # ---------------------------------------------------------------------------------------------------
-class Route(BaseModel):
-    from_area: str = Field(description="where occupants start (a storey or space name)")
-    via: str = Field(default="", description="circulation/stair route taken")
-    to_exit: str = Field(description="the exit id or name they leave by")
-    note: str = Field(default="", description="short note, e.g. approx distance or a caveat")
-
-
-class ScenarioConditions(BaseModel):
-    exits_available: List[str] = Field(description="exit ids that stay open in this scenario")
-    exits_discounted: List[str] = Field(default_factory=list,
-                                        description="exit ids assumed blocked/unavailable")
-    occupancy_state: str = Field(description="e.g. 'night', 'day', 'peak occupancy'")
-    occupants_total: int = Field(description="occupants to evacuate under this scenario's state; must "
-                                             "not exceed the computed total occupant load")
-
-
-DISTRIBUTIONS = "constant, uniform, normal, lognormal"
-
-
-class PreMovement(BaseModel):
-    """Pre-travel activity time — how long occupants take to react before they start moving."""
-    distribution: str = Field(description=f"one of: {DISTRIBUTIONS}")
-    mean_s: float = Field(description="mean pre-movement time in seconds")
-    sd_s: float = Field(default=0.0, description="standard deviation in seconds (0 for constant)")
-    basis: str = Field(description="why these values for THIS building and THIS scenario — the "
-                                   "occupancy type, whether occupants may be asleep, and the alarm "
-                                   "arrangement you are assuming")
+class FireScenario(BaseModel):
+    fire_origin: Optional[str] = Field(default=None, description="space/area where the fire starts, "
+                                       "if this scenario involves one; leave null otherwise")
+    blocked_elements: List[str] = Field(default_factory=list,
+                                        description="ids of doors/stairs/exits blocked by fire or smoke")
+    smoke_condition: str = Field(default="none", description="'none', 'light', or 'heavy'")
 
 
 class OccupantProfile(BaseModel):
@@ -71,52 +53,65 @@ class OccupantProfile(BaseModel):
     name: str = Field(description="e.g. 'adult', 'child', 'reduced mobility'")
     fraction: float = Field(description="share of the occupants in this group, 0..1; the fractions "
                                         "across all profiles must sum to 1.0", ge=0, le=1)
-    speed_distribution: str = Field(description=f"one of: {DISTRIBUTIONS}")
-    speed_ms_mean: float = Field(description="mean unimpeded walking speed, m/s")
-    speed_ms_sd: float = Field(default=0.0, description="standard deviation, m/s (0 for constant)")
-    shoulder_width_m: float = Field(description="shoulder width / body diameter in metres")
+    speed_ms_mean: float = Field(description="mean unimpeded walking speed, m/s (able adults ~1.2 m/s, "
+                                             "stay within 0.5-2.0 m/s)")
+    shoulder_width_m: float = Field(description="shoulder width / body diameter in metres (~0.45-0.5)")
     basis: str = Field(description="why this group and these values suit this building")
 
 
-class OccupancyMultiplier(BaseModel):
-    """How a scenario's occupancy state scales the computed load for one use-type."""
-    use_type: str = Field(description="a use_type appearing in the space list, e.g. 'dwelling'")
-    multiplier: float = Field(
-        description="0.0..1.0 INCLUSIVE — a hard limit, never above 1.0. It can only empty or thin a "
-                    "use-type, never overfill it (e.g. at night, commercial 0.0 and dwelling 1.0)",
-        ge=0, le=1)
-    reason: str
-
-
-class SimulationSetup(BaseModel):
-    """The egress-simulation parameters for this scenario. Unlike the occupant loads and travel
-    distances (which are computed and off-limits), these ARE yours to choose."""
-    movement_model: str = Field(description="'steering' (agent-based) or 'sfpe' (hydraulic)")
-    end_time_s: float = Field(description="how long to let the simulation run, seconds")
-    pre_movement: PreMovement
+class OccupancyInputs(BaseModel):
+    occupancy_state: str = Field(description="e.g. 'night', 'day', 'peak occupancy'")
+    occupants_total: int = Field(description="occupants to evacuate under this scenario's state; must "
+                                             "not exceed the computed total occupant load")
     profiles: List[OccupantProfile] = Field(description="population mix; fractions must sum to 1.0")
-    occupancy_multipliers: List[OccupancyMultiplier] = Field(
-        default_factory=list,
-        description="how you scaled the computed occupant load to reach this scenario's "
-                    "occupants_total; omit or leave empty for a full-occupancy scenario")
+
+
+class EscapeStrategy(BaseModel):
+    available_exits: List[str] = Field(description="exit ids that stay open in this scenario")
+    blocked_exits: List[str] = Field(default_factory=list, description="exit ids assumed unavailable")
+    routing_strategy: str = Field(default="", description="short note on how occupants are routed to "
+                                                           "the available exits")
+
+
+class OccupantBehaviour(BaseModel):
+    movement_model: str = Field(description="'steering' (agent-based, shows queueing/route choice) or "
+                                             "'sfpe' (hydraulic flow)")
+    pre_movement_time: str = Field(description="pre-travel activity time as a short string, including "
+                                               "the basis — e.g. 'lognormal, mean 120s, alert daytime "
+                                               "occupancy' or 'normal, mean 480s, asleep at night'")
+
+
+class ScenarioInputs(BaseModel):
+    fire_scenario: FireScenario
+    occupancy: OccupancyInputs
+    escape_strategy: EscapeStrategy
+    occupant_behaviour: OccupantBehaviour
+    engineering_assumptions: List[str] = Field(default_factory=list)
+
+
+class RelevantIfcElements(BaseModel):
+    spaces: List[str] = Field(default_factory=list, description="space guids this scenario concerns")
+    doors: List[str] = Field(default_factory=list, description="door ids this scenario concerns")
+    stairs: List[str] = Field(default_factory=list, description="stair ids this scenario concerns")
+    exits: List[str] = Field(default_factory=list, description="exit ids this scenario concerns")
+
+
+class RegulatoryJustification(BaseModel):
+    codes: List[str] = Field(default_factory=list, description="regulation unique_ids cited, from the "
+                                                                "REGULATION REFERENCES given — never "
+                                                                "invented")
+    objective: str = Field(default="", description="what the cited regulation is trying to achieve")
+    reason: str = Field(default="", description="why this scenario tests that regulation")
 
 
 class ScenarioContent(BaseModel):
-    id: str = Field(description="short id you assign, e.g. 'SCN-BASE', 'SCN-EXIT-BLOCKED'")
-    type: str = Field(description="e.g. 'base_case', 'one_exit_discounted'")
-    title: str
-    conditions: ScenarioConditions
-    assumptions: List[str]
-    occupant_distribution: List[str] = Field(description="occupants per storey/area, e.g. 'Floor_02: 8'")
-    routes: List[Route]
-    bottlenecks: List[str]
-    risks: List[str]
-    narrative: str
-    simulation: SimulationSetup
-    regulatory_justification: str = Field(
-        description="the regulation clause(s) this scenario tests, cited ONLY from the given references")
-    ai_explanation: str = Field(
-        description="short reasoning: why you chose this scenario and what it shows")
+    scenario_id: str = Field(description="short id you assign, e.g. 'SCN-001', 'SCN-002'")
+    description: str = Field(description="one-line description of the scenario")
+    relevant_ifc_elements: RelevantIfcElements
+    regulatory_justification: RegulatoryJustification
+    ai_explanation: str = Field(description="short reasoning: why you chose this scenario and what it "
+                                             "shows")
+    scenario_inputs: ScenarioInputs
 
 
 class BuildingAnalysis(BaseModel):
@@ -135,58 +130,50 @@ _SYSTEM = (
     "distances by measuring the walked path over the real floor plan. Use them exactly as supplied. "
     "Never recompute, re-estimate, scale or round them differently, and never invent an occupant count, "
     "a distance, a room or an exit. Every number in your prose must appear verbatim in the facts below. "
-    "Refer to exits only by the ids given.\n\n"
+    "Refer to spaces, doors, stairs and exits only by the ids given.\n\n"
     "YOUR TASK IS THE SCENARIO SET.\n"
     "Create AT LEAST FOUR distinct evacuation scenarios, generated autonomously from the building "
     "geometry, storey layout, space types, occupant distribution, exit locations, computed travel "
     "distances and the circulation network. Do NOT choose scenarios randomly — analyse the building and "
     "create scenarios that are meaningful for this specific IFC model.\n\n"
-    "The first scenario MUST always be the Base Case: all final exits available, normal occupancy.\n\n"
+    "The first scenario MUST always be the Base Case: all final exits available, normal occupancy, no "
+    "fire/smoke condition (fire_scenario.smoke_condition = 'none', fire_origin = null, "
+    "blocked_elements = []).\n\n"
     "Choose the remaining scenarios by identifying the most realistic or most challenging evacuation "
     "conditions for THIS building. Examples (not mandatory, not exhaustive): loss of the busiest exit; "
     "loss of the exit serving the largest population; loss of an upper-floor escape route; night "
     "occupancy; daytime peak occupancy; maintenance closure of one exit; reduced exit capacity; high "
-    "occupancy concentrated on one storey; congestion at a stair; or any geometry-specific evacuation "
-    "challenge you can see in the facts. Pick whichever best stress the evacuation routes, and make each "
-    "scenario substantially different from the others.\n\n"
+    "occupancy concentrated on one storey; a fire in a specific space blocking nearby elements. Pick "
+    "whichever best stress the evacuation routes, and make each scenario substantially different from "
+    "the others.\n\n"
     "When a scenario discounts an exit, prefer one of the exits whose DEGRADED-CASE FACTS are supplied "
     "below, and use those recomputed numbers rather than the base-case ones.\n\n"
-    "For every scenario determine: occupancy_state, occupants_total, exits_available, exits_discounted, "
-    "occupant_distribution, routes (from_area -> via -> to_exit), bottlenecks, risks, assumptions and a "
-    "short plain-English narrative. occupants_total must be consistent with your occupant_distribution "
-    "and must not exceed the computed total occupant load; if you reduce it (e.g. a night state), say so "
-    "in that scenario's assumptions.\n\n"
-    "SIMULATION PARAMETERS — THESE ONES ARE YOURS TO CHOOSE.\n"
-    "The occupant loads and travel distances above are computed and off-limits. The `simulation` block "
-    "is different: it is the egress-simulation set-up, and you decide it per scenario. Give:\n"
-    "  * movement_model — 'steering' (agent-based, shows queueing and route choice) or 'sfpe' "
-    "(hydraulic flow); say which suits the scenario.\n"
-    "  * end_time_s — long enough that everyone who can escape has escaped.\n"
-    "  * pre_movement — the pre-travel activity time as a DISTRIBUTION, not a single number. Choose "
-    "values that fit this building's occupancy and whether occupants may be asleep, and state the alarm "
-    "arrangement you are assuming in `basis`. Typical engineering practice sits well under 30 minutes; "
-    "a sleeping residential occupancy warrants a longer and more spread-out time than an alert one.\n"
-    "  * profiles — the population mix (e.g. adults, children, reduced mobility), each with a walking "
-    "speed distribution and shoulder width. Unimpeded walking speeds for able adults on the level are "
-    "around 1.2 m/s and should stay inside 0.5-2.0 m/s; shoulder widths sit around 0.45-0.5 m. The "
-    "`fraction` values MUST sum to exactly 1.0.\n"
-    "  * occupancy_multipliers — if this scenario's occupants_total is lower than the computed total "
-    "occupant load, give the per-use_type multipliers that produce it (e.g. a night state might set "
-    "'commercial' to 0.0 and keep 'dwelling' at 1.0). These are applied per room downstream, so they "
-    "are how your reduced total actually gets placed in the building. Leave empty for full occupancy. "
-    "Every multiplier MUST lie between 0.0 and 1.0 inclusive — this is a hard limit, not a preference. "
-    "The computed occupant loads are already the code-derived capacity of each room, so there is no "
-    "such thing as a multiplier above 1.0: it would put more people in a room than the floor-space "
-    "factor allows and the result would no longer be code-based. To make a scenario MORE demanding, "
-    "discount an exit, lengthen pre-movement, or shift the population mix towards slower profiles — "
-    "never inflate occupancy.\n"
-    "Every one of these carries a `basis` / `reason` field: state your engineering reasoning there. "
-    "These are the only numbers in the whole output you are permitted to originate — everything else "
-    "must still come verbatim from the computed facts.\n\n"
-    "Also give, per scenario: regulatory_justification — the regulation clause(s) the scenario tests, "
-    "cited ONLY from the REGULATION REFERENCES provided (use their ids and doc references; do not invent "
-    "clause numbers); and ai_explanation — one or two sentences on why you chose this scenario and what "
-    "it demonstrates for egress.\n\n"
+    "FOR EVERY SCENARIO, fill in:\n"
+    "  * scenario_id, description — a short id you assign and a one-line description.\n"
+    "  * relevant_ifc_elements — the space guids / door ids / stair ids / exit ids this scenario "
+    "actually concerns, all copied verbatim from the facts below. Leave a list empty if none apply.\n"
+    "  * fire_scenario — fire_origin (a space name/guid from the facts, or null if this scenario has no "
+    "fire), blocked_elements (ids blocked by the fire/smoke, or empty), smoke_condition ('none', "
+    "'light' or 'heavy'). Most scenarios (e.g. an exit closed for maintenance) have no fire condition — "
+    "leave this at its 'none'/null/empty defaults unless the scenario is specifically fire-driven.\n"
+    "  * scenario_inputs.occupancy — occupancy_state, occupants_total (must not exceed the computed "
+    "total occupant load; if reduced, say why in engineering_assumptions), and profiles (population "
+    "mix; fractions MUST sum to exactly 1.0).\n"
+    "  * scenario_inputs.escape_strategy — available_exits, blocked_exits, and a short "
+    "routing_strategy note.\n"
+    "  * scenario_inputs.occupant_behaviour — movement_model ('steering' or 'sfpe', say which suits "
+    "the scenario) and pre_movement_time as a short string stating both the value and its basis "
+    "(occupancy type, whether occupants may be asleep, the alarm arrangement assumed). Typical "
+    "engineering practice sits well under 30 minutes; a sleeping residential occupancy warrants a "
+    "longer and more spread-out time than an alert one.\n"
+    "  * scenario_inputs.engineering_assumptions — any other assumptions made for this scenario.\n"
+    "  * regulatory_justification — codes (cited ONLY from the REGULATION REFERENCES given below, by "
+    "their ids; never invent a clause number), objective, and reason.\n"
+    "  * ai_explanation — one or two sentences on why you chose this scenario and what it demonstrates "
+    "for egress.\n\n"
+    "The occupant profiles, movement model, pre-movement time and routing strategy are the only things "
+    "in the whole output you are permitted to originate — everything else (ids, counts, distances) must "
+    "still come verbatim from the computed facts.\n\n"
     "If some spaces could not be assessed, treat them as an open risk, never as safe."
 )
 
@@ -195,6 +182,7 @@ _TASK = "Produce the BuildingAnalysis: your chosen scenarios, written from the c
 
 # ---------------------------------------------------------------------------------------------------
 # Grounding: the computed egress results are the facts the model reasons over.
+# UNCHANGED from the original file — none of this needed to move for the schema change.
 # ---------------------------------------------------------------------------------------------------
 def _resolve_exits(summary, classified, grounded):
     """The computed ground-level final exits; falls back to all emergency exits if none sit at grade."""
@@ -320,8 +308,8 @@ def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
                       f"(missing data / no path) — do not assume they are safe."]
 
     if reg_refs:
-        lines += ["", "Regulation references (cite each scenario's regulatory_justification ONLY from "
-                      "these):"]
+        lines += ["", "Regulation references (cite each scenario's regulatory_justification.codes ONLY "
+                      "from these):"]
         for r in reg_refs:
             lines.append(f"  - {r['id']}: {r['name']} (ref: {r['reference']})")
     return "\n".join(lines)
@@ -329,6 +317,7 @@ def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
 
 # ---------------------------------------------------------------------------------------------------
 # Deterministic assembly of the whole-building object around the AI-chosen scenarios.
+# UNCHANGED from the original file — these build `building`/`exits`/`doors`/etc, not the scenario shape.
 # ---------------------------------------------------------------------------------------------------
 def _building_block(summary, grounded, jurisdiction):
     total_area = round(sum(s["area_m2"] for s in grounded["spaces"] if s["area_m2"]), 1)
@@ -457,25 +446,16 @@ def _model_block(summary):
 
 
 def _assemble_scenario(sc):
+    """CHANGED: now returns the SCN-001 shape (scenario_id / description / relevant_ifc_elements /
+    regulatory_justification / ai_explanation / scenario_inputs) instead of the old
+    id/type/title/conditions/routes/bottlenecks/risks/narrative/simulation shape."""
     return {
-        "id": sc.id,
-        "type": sc.type,
-        "title": sc.title,
-        "conditions": {
-            "exits_available": sc.conditions.exits_available,
-            "exits_discounted": sc.conditions.exits_discounted,
-            "occupancy_state": sc.conditions.occupancy_state,
-            "occupants_total": sc.conditions.occupants_total,
-        },
-        "assumptions": sc.assumptions,
-        "occupant_distribution": sc.occupant_distribution,
-        "routes": [r.model_dump() for r in sc.routes],
-        "bottlenecks": sc.bottlenecks,
-        "risks": sc.risks,
-        "narrative": sc.narrative,
-        "simulation": sc.simulation.model_dump(),
-        "regulatory_justification": sc.regulatory_justification,
+        "scenario_id": sc.scenario_id,
+        "description": sc.description,
+        "relevant_ifc_elements": sc.relevant_ifc_elements.model_dump(),
+        "regulatory_justification": sc.regulatory_justification.model_dump(),
         "ai_explanation": sc.ai_explanation,
+        "scenario_inputs": sc.scenario_inputs.model_dump(),
     }
 
 
@@ -486,10 +466,9 @@ def _invoke_structured(llm, prompt, attempts=None):
     """The generation call, retried with the schema's own rejection handed back to the model.
 
     The scenario call is the expensive one — 16k tokens and up to a 600 s read — and it is a single
-    shot. One field the model puts out of range otherwise throws the entire run away: an
-    ``occupancy_multiplier`` above 1.0 is the case seen in practice, because a model reaching for a
-    "crowded" scenario tries to scale occupancy up, which the schema forbids by design (a computed
-    occupant load is already a room's code-derived capacity).
+    shot. One field the model puts out of range otherwise throws the entire run away: a profile
+    `fraction` set that doesn't sum to 1.0, or an occupants_total above the computed load, is the kind
+    of thing seen in practice.
 
     Showing the model the exact validation error lets it correct that one field rather than the user
     losing the whole generation. The constraints themselves are never relaxed — a reply that keeps
@@ -520,7 +499,8 @@ def _invoke_structured(llm, prompt, attempts=None):
 
 def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, model_label=None):
     """Assemble the whole-building scenario object: computed egress + ONE grounded LLM call for the
-    scenario set + the regulation gate."""
+    scenario set + the regulation gate. UNCHANGED except that `analysis.scenarios` now come back in the
+    new SCN-001 shape via the updated `_assemble_scenario`."""
     if llm is None:
         # the generation call is the big one — give it a long read timeout (override EVAC_GEN_TIMEOUT)
         llm, model_label = select_llm(max_tokens=16384,
@@ -570,7 +550,10 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
     }
 
     # Deterministic post-pass: spread each scenario's occupants over the rooms and give them a goal.
-    # It needs both `spaces` and the AI's scenarios, so it can only run on the assembled object.
+    # NOTE: attach_occupancy() previously read scn["conditions"]/scn["simulation"] on each scenario —
+    # those keys no longer exist under the new shape. If it still expects them it will break here;
+    # check occupant_placement.py and update it to read scn["scenario_inputs"]["occupancy"] and
+    # scn["scenario_inputs"]["escape_strategy"] instead before relying on this in production.
     return attach_occupancy(obj)
 
 
@@ -602,8 +585,12 @@ if __name__ == "__main__":
           f"{len(obj['not_assessed'])} not_assessed.")
     print(f"Total occupant load (computed): {obj['building']['total_occupant_load']}")
     for scn in obj["scenarios"]:
-        print(f"\n{scn['id']} ({scn['type']}) — {scn['title']}")
-        print(f"conditions: {scn['conditions']}")
-        print(f"routes: {len(scn['routes'])} | bottlenecks: {len(scn['bottlenecks'])} "
-              f"| risks: {len(scn['risks'])}")
-        print(f"narrative: {scn['narrative'][:280]}...")
+        # CHANGED: old prints used scn['id']/scn['type']/scn['title']/scn['conditions']/scn['routes']/
+        # scn['bottlenecks']/scn['risks']/scn['narrative'] — none of those keys exist any more.
+        occ = scn["scenario_inputs"]["occupancy"]
+        strategy = scn["scenario_inputs"]["escape_strategy"]
+        print(f"\n{scn['scenario_id']} — {scn['description']}")
+        print(f"occupancy_state={occ['occupancy_state']} occupants_total={occ['occupants_total']} "
+              f"available_exits={len(strategy['available_exits'])} "
+              f"blocked_exits={len(strategy['blocked_exits'])}")
+        print(f"ai_explanation: {scn['ai_explanation'][:280]}...")

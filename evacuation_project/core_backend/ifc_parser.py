@@ -5,6 +5,7 @@ import ifcopenshell.util.placement as placement_util
 import ifcopenshell.geom as geom_util
 import ifcopenshell.util.shape as shape_util
 from collections import defaultdict
+import math
 import sys
 from core_backend.sample_paths import resolve_ifc
 
@@ -471,6 +472,345 @@ def storey_levels(model, scale):
     ]
 
 
+# --- space-frame reconciliation --------------------------------------------------------------------
+# Some exporters lose the placement transform on a subset of IfcSpaces: the space geometry comes back
+# in the raw authoring frame while doors, walls and stairs keep correct world placements. The two then
+# disagree by a rigid transform, no door touches any room, and every egress path disappears.
+#
+# ``door_space_links`` states which doors bound which rooms from topology alone (IfcRelSpaceBoundary +
+# hosting wall), independent of any coordinate. That gives correspondences to *solve* the transform
+# from rather than assuming an angle: a global sweep of the single rotational degree of freedom, then
+# trimmed ICP against the room outlines to converge it. No angle or offset is hardcoded, so a model
+# tilted by any amount is handled. It is done per storey (the loss is per-storey in practice) and
+# adopted only when it measurably improves door-to-room agreement, so a well-formed model is left
+# untouched -- which is what makes it safe to run on every file.
+
+FRAME_OK_M = 0.5            # a storey whose doors already sit this close to their rooms is not touched
+FRAME_ADOPT_M = 1.5         # ...and a fitted frame must land doors at least this close to be believed
+FRAME_GAIN = 10.0           # ...and must improve the median gap by at least this factor
+FRAME_MIN_PAIRS = 5         # fewer correspondences than this cannot constrain a fit
+FRAME_INLIER_M = 0.5        # a door within this of a room it bounds counts as agreeing with it
+FRAME_SWEEP_DEG = 1.0       # coarse global rotation sweep: ICP alone lands in local minima
+FRAME_TRIM_M = 2.0          # ICP ignores pairs beyond this -- hosting-wall over-linking, not slop
+FRAME_ICP_MAX_STEPS = 60    # ICP converges in ~25 steps on a clean fit; the cap is a safety stop
+FRAME_ICP_SHIFT_M = 1e-4    # stop once the fitted transform stops moving
+FRAME_ICP_ANGLE_RAD = 1e-5
+
+
+def _rigid_2d(pairs):
+    """Least-squares rotation+translation taking each source point onto its target, or None.
+
+    Closed-form 2-D Kabsch/Umeyama with no scaling (unit_scale already put everything in metres).
+    ``pairs`` is [((sx, sy), (tx, ty)), ...]; the result is (cos, sin, dx, dy).
+    """
+    if not pairs:
+        return None
+    n = len(pairs)
+    sx = sum(p[0][0] for p in pairs) / n
+    sy = sum(p[0][1] for p in pairs) / n
+    tx = sum(p[1][0] for p in pairs) / n
+    ty = sum(p[1][1] for p in pairs) / n
+    num = den = 0.0
+    for (a, b) in pairs:
+        px, py = a[0] - sx, a[1] - sy
+        qx, qy = b[0] - tx, b[1] - ty
+        num += px * qy - py * qx
+        den += px * qx + py * qy
+    if abs(num) < 1e-12 and abs(den) < 1e-12:
+        return None
+    theta = math.atan2(num, den)
+    c, s = math.cos(theta), math.sin(theta)
+    return (c, s, tx - (c * sx - s * sy), ty - (s * sx + c * sy))
+
+
+def _apply_xy(transform, x, y):
+    c, s, dx, dy = transform
+    return (c * x - s * y + dx, s * x + c * y + dy)
+
+
+def _invert_2d(transform):
+    c, s, dx, dy = transform
+    return (c, -s, -(c * dx + s * dy), -(-s * dx + c * dy))
+
+
+def _affine_matrix(transform):
+    """shapely.affinity.affine_transform coefficients for a (cos, sin, dx, dy) rigid transform."""
+    c, s, dx, dy = transform
+    return [c, -s, s, c, dx, dy]
+
+
+def _median(values):
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def _frame_gaps(entries, transform=None):
+    """Distance from each door position to the outline of the room it bounds (0 when inside).
+
+    Distance is invariant under a rigid transform, so this moves the *door point* by the inverse
+    rather than rebuilding every polygon -- the rotation sweep evaluates hundreds of candidates.
+    """
+    from shapely.geometry import Point
+
+    inverse = _invert_2d(transform) if transform is not None else None
+    gaps = []
+    for polygon, (dx, dy) in entries:
+        x, y = (dx, dy) if inverse is None else _apply_xy(inverse, dx, dy)
+        gaps.append(polygon.distance(Point(x, y)))
+    return gaps
+
+
+def _frame_agreement(entries, transform=None):
+    """(doors landing on the room they bound, median gap) -- higher then lower is better."""
+    gaps = _frame_gaps(entries, transform)
+    return sum(1 for g in gaps if g <= FRAME_INLIER_M), _median(gaps)
+
+
+def _sweep_rotation(entries):
+    """Best rigid transform over a global rotation sweep.
+
+    ICP on its own converges to whichever local minimum the seed falls in; on a real model the
+    hosting-wall rule gives each door several rooms it does not really bound, and those outliers pull
+    the seed far enough to miss the true angle. There is only one rotational degree of freedom, so it
+    is cheaper to sweep it exhaustively. The translation for each angle is the *median* per-pair
+    offset, which ignores those same outliers.
+    """
+    centroids = [(p.centroid.x, p.centroid.y) for p, _ in entries]
+    targets = [d for _, d in entries]
+    best = None
+    steps = int(round(360.0 / FRAME_SWEEP_DEG))
+    for step in range(steps):
+        theta = math.radians(step * FRAME_SWEEP_DEG)
+        c, s = math.cos(theta), math.sin(theta)
+        dx = _median([t[0] - (c * cx - s * cy) for (cx, cy), t in zip(centroids, targets)])
+        dy = _median([t[1] - (s * cx + c * cy) for (cx, cy), t in zip(centroids, targets)])
+        transform = (c, s, dx, dy)
+        score = _frame_agreement(entries, transform)
+        if best is None or (score[0], -score[1]) > (best[1][0], -best[1][1]):
+            best = (transform, score)
+    return best[0] if best else None
+
+
+def _trimmed_icp(entries, transform):
+    """Refine a transform against the room outlines, ignoring pairs it cannot explain.
+
+    Trimming is what makes this survive ``door_space_links``: a door inherits every space its host
+    wall bounds, so a long wall attributes it to rooms metres away. Those pairs are real topology but
+    useless geometry, and fitting to them drags the answer off.
+    """
+    from shapely.geometry import Point
+    from shapely.ops import nearest_points
+
+    steps = 0
+    for steps in range(1, FRAME_ICP_MAX_STEPS + 1):
+        gaps = _frame_gaps(entries, transform)
+        keep = [i for i, g in enumerate(gaps) if g <= FRAME_TRIM_M]
+        if len(keep) < FRAME_MIN_PAIRS:
+            keep = sorted(range(len(gaps)), key=lambda i: gaps[i])[:FRAME_MIN_PAIRS]
+        inverse = _invert_2d(transform)
+        refined = []
+        for i in keep:
+            polygon, door_xy = entries[i]
+            bx, by = _apply_xy(inverse, door_xy[0], door_xy[1])
+            on_outline = nearest_points(polygon.boundary, Point(bx, by))[0]
+            refined.append(((on_outline.x, on_outline.y), door_xy))
+        stepped = _rigid_2d(refined)
+        if stepped is None:
+            break
+        shift = math.hypot(stepped[2] - transform[2], stepped[3] - transform[3])
+        turn = abs(math.atan2(stepped[1], stepped[0]) - math.atan2(transform[1], transform[0]))
+        transform = stepped
+        if shift < FRAME_ICP_SHIFT_M and turn < FRAME_ICP_ANGLE_RAD:
+            break
+    return transform, steps
+
+
+def reconcile_space_frame(spaces, doors, links, storeys):
+    """Move space geometry onto the door/placement frame on storeys where the two disagree.
+
+    Rewrites ``footprint`` and ``centroid`` in place and returns a per-storey report. A storey whose
+    doors already sit within ``FRAME_OK_M`` of the rooms they bound is never touched, so this is a
+    no-op on a well-formed model.
+    """
+    try:
+        from shapely.affinity import affine_transform
+    except Exception:
+        return []
+
+    door_position = {d["id"]: d["position"] for d in doors if d.get("position") is not None}
+    space_by_id = {s["id"]: s for s in spaces}
+    storey_name = {st["id"]: st.get("name") for st in storeys}
+
+    by_storey = defaultdict(list)
+    for space in spaces:
+        storey_id = (space.get("storey") or {}).get("id")
+        if storey_id is not None:
+            by_storey[storey_id].append(space)
+
+    # each (door, room it bounds) pair is one correspondence, grouped by the room's storey
+    entries_by_storey = {}
+    for storey_id in by_storey:
+        entries = []
+        for door_id, bounded in links.items():
+            position = door_position.get(door_id)
+            if position is None:
+                continue
+            for gid in bounded:
+                space = space_by_id.get(gid)
+                if space is None or space.get("footprint") is None:
+                    continue
+                if (space.get("storey") or {}).get("id") != storey_id:
+                    continue
+                entries.append((space["footprint"], (position[0], position[1])))
+        entries_by_storey[storey_id] = entries
+
+    rows = {}
+    needs = []
+    for storey_id, entries in entries_by_storey.items():
+        row = {"storey": storey_id, "storey_name": storey_name.get(storey_id),
+               "pairs": len(entries), "corrected": False, "rotation_deg": None,
+               "translation_m": None, "median_gap_before_m": None, "median_gap_after_m": None,
+               "doors_on_their_room_before": None, "doors_on_their_room_after": None, "note": None}
+        rows[storey_id] = row
+        if len(entries) < FRAME_MIN_PAIRS:
+            row["note"] = "too few door-to-room correspondences to fit a frame"
+            continue
+        inliers, median_before = _frame_agreement(entries)
+        row["median_gap_before_m"] = round(median_before, 3)
+        row["doors_on_their_room_before"] = inliers
+        if median_before <= FRAME_OK_M:
+            row["note"] = "space and door frames already agree"
+            continue
+        needs.append(storey_id)
+
+    # Candidate transforms: one fitted per mis-framed storey, plus one fitted over all of them
+    # pooled. A storey usually loses its placement because the *model* lost it, so the pooled fit
+    # sees several times the correspondences and is often the better answer for a thin storey --
+    # but it is offered as a candidate and scored, never assumed.
+    candidates = []
+    for storey_id in needs:
+        seed = _sweep_rotation(entries_by_storey[storey_id])
+        if seed is not None:
+            candidates.append(_trimmed_icp(entries_by_storey[storey_id], seed)[0])
+    if len(needs) > 1:
+        pooled = [e for storey_id in needs for e in entries_by_storey[storey_id]]
+        seed = _sweep_rotation(pooled)
+        if seed is not None:
+            candidates.append(_trimmed_icp(pooled, seed)[0])
+
+    for storey_id in needs:
+        entries, row = entries_by_storey[storey_id], rows[storey_id]
+        median_before = row["median_gap_before_m"]
+        if not candidates:
+            row["note"] = "correspondences are degenerate; no transform fitted"
+            continue
+        transform = max(candidates, key=lambda t: (lambda a: (a[0], -a[1]))(
+            _frame_agreement(entries, t)))
+        inliers_after, median_after = _frame_agreement(entries, transform)
+        row["median_gap_after_m"] = round(median_after, 3)
+        row["doors_on_their_room_after"] = inliers_after
+
+        if not (median_after <= FRAME_ADOPT_M
+                and median_after * FRAME_GAIN <= median_before
+                and inliers_after > (row["doors_on_their_room_before"] or 0)):
+            row["note"] = (f"no fitted frame explained this storey (median {median_before:.2f} m -> "
+                           f"{median_after:.2f} m, doors on their room "
+                           f"{row['doors_on_their_room_before']} -> {inliers_after} of "
+                           f"{len(entries)}); storey left as parsed")
+            continue
+
+        matrix = _affine_matrix(transform)
+        for space in by_storey[storey_id]:
+            if space.get("footprint") is not None:
+                space["footprint"] = affine_transform(space["footprint"], matrix)
+            centroid = space.get("centroid")
+            if centroid is not None:
+                x, y = _apply_xy(transform, centroid[0], centroid[1])
+                space["centroid"] = (x, y, centroid[2])
+
+        c, s, dx, dy = transform
+        row.update({
+            "corrected": True,
+            "rotation_deg": round(math.degrees(math.atan2(s, c)), 3),
+            "translation_m": [round(dx, 3), round(dy, 3)],
+            "note": (f"space geometry re-seated onto the door frame; median door-to-room gap "
+                     f"{median_before:.2f} m -> {median_after:.2f} m, doors landing on the room "
+                     f"they bound {row['doors_on_their_room_before']} -> {inliers_after} of "
+                     f"{len(entries)}"),
+        })
+
+    return list(rows.values())
+
+
+OVERLAY_COVERED_SHARE = 0.9   # a space this far inside another one is an overlay, not a room
+
+
+def _is_overlay_of_a_connected_room(space, connected):
+    """True when this space sits (almost) wholly inside a room that already has a door."""
+    area = space["footprint"].area
+    if area <= 0:
+        return True
+    storey_id = (space.get("storey") or {}).get("id")
+    for other in connected:
+        if (other.get("storey") or {}).get("id") != storey_id:
+            continue
+        if other["footprint"].intersection(space["footprint"]).area >= OVERLAY_COVERED_SHARE * area:
+            return True
+    return False
+
+
+def augment_door_space_links(links, spaces, doors, levels, tolerance_m=0.3):
+    """Link doors to rooms geometrically, but only for rooms topology left with no door at all.
+
+    ``door_space_links`` is built from IfcRelSpaceBoundary plus the door's hosting wall. A space
+    carrying neither -- whole-apartment zones are the common case -- ends up with no door, so the
+    egress graph cannot route out of it however good the geometry is. Restricting this to rooms with
+    *zero* links keeps connectivity door-driven and stops it inflating a well-formed model's graph.
+
+    Overlay spaces are skipped. An exporter also emits clearance markers -- wheelchair turning circles
+    and the like -- that sit wholly inside a real room; they already inherit that room's connectivity,
+    so linking them adds graph edges without adding anywhere anyone needs to escape from. An apartment
+    zone *contains* its rooms rather than sitting inside one, so it is kept.
+    """
+    try:
+        from shapely.geometry import Point
+    except Exception:
+        return links, 0
+
+    linked = {gid for bounded in links.values() for gid in bounded}
+    orphans = [s for s in spaces
+               if s["id"] not in linked and s.get("footprint") is not None and s.get("storey")]
+    connected = [s for s in spaces
+                 if s["id"] in linked and s.get("footprint") is not None and s.get("storey")]
+    orphans = [s for s in orphans if not _is_overlay_of_a_connected_room(s, connected)]
+    if not orphans:
+        return links, 0
+
+    reach = {s["id"]: s["footprint"].buffer(tolerance_m) for s in orphans}
+    augmented = {door_id: list(bounded) for door_id, bounded in links.items()}
+    added = 0
+    for door in doors:
+        position = door.get("position")
+        if position is None:
+            continue
+        near = _nearest_storey(position[2], levels)
+        if near is None:
+            continue
+        point = Point(position[0], position[1])
+        for space in orphans:
+            if (space.get("storey") or {}).get("id") != near["id"]:
+                continue
+            if reach[space["id"]].contains(point):
+                bounded = augmented.setdefault(door["id"], [])
+                if space["id"] not in bounded:
+                    bounded.append(space["id"])
+                    added += 1
+    return {door_id: sorted(bounded) for door_id, bounded in augmented.items() if bounded}, added
+
+
 def parser_summary(ifc_path):
     model = ifcopenshell.open(ifc_path)
     scale = unit_util.calculate_unit_scale(model)  
@@ -482,9 +822,17 @@ def parser_summary(ifc_path):
     all_doors = doors(model, scale)
     all_transport = transport_elements(model, scale)
 
+    # Spaces get their coordinates from geometry and doors from placements; reconcile the two before
+    # anything downstream reads a footprint, then give door-less rooms a geometric link.
+    all_spaces = space_extract(model, scale, world_settings, levels)
+    all_storeys = storeys(model, scale)
+    links = door_space_links(model)
+    space_frame = reconcile_space_frame(all_spaces, all_doors, links, all_storeys)
+    links, links_added = augment_door_space_links(links, all_spaces, all_doors, levels)
+
     return {
         "project": load_project_name(model),
-        "spaces": space_extract(model, scale, world_settings, levels),
+        "spaces": all_spaces,
         "corridors": each_corridor(model, scale),
         "doors": all_doors,
         "stairs": stairs(model, scale, geom_settings),
@@ -492,11 +840,15 @@ def parser_summary(ifc_path):
         "windows": windows(model, scale),
         "walls": walls(model, scale),
         "slabs": slabs(model),
-        "storeys": storeys(model, scale),
+        "storeys": all_storeys,
         "smoke_alarms": smoke_alarms(model, scale),
         #"fire_suppression_terminals": fire_terminals(model),
         "space_boundaries": space_boundary(model),
-        "door_space_links": door_space_links(model),
+        "door_space_links": links,
+        # how the space geometry was reconciled against the door frame, per storey -- surfaced so a
+        # corrected model is never silently corrected
+        "space_frame": space_frame,
+        "door_links_added_geometrically": links_added,
         "connected_elements": connected_elements(model),
         "elevators": [t for t in all_transport if t["category"] == "elevator"],
         "emergency_exits": [d for d in all_doors if d["is_emergency_exit"]]

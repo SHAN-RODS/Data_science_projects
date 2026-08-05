@@ -161,7 +161,9 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
     adjacency, positions, final_exits = build_graph(summary, classified, discounted_exits)
     use_type = {c["guid"]: c["use_type"] for c in classified}
 
-    travel = compute_travel_distances(summary, classified, final_exits, discounted_exits)
+    travel_report = {}
+    travel = compute_travel_distances(summary, classified, final_exits, discounted_exits,
+                                      report=travel_report)
 
     dwelling_storeys = {(sp["storey"] or {}).get("id")
                         for sp in summary["spaces"] if use_type.get(sp["id"]) == "dwelling"}
@@ -182,16 +184,35 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
         exit_id, bfs_distance, _ = nearest_exit(gid, adjacency, positions)
 
         td = travel.get(gid)
-        if td is not None:
+        note = None
+        if td is not None and td["reachable"]:
             distance = td["travel_distance_m"]
-            reachable = td["reachable"]
+            reachable = True
             method = td["travel_distance_method"]
             remote_point = td["most_remote_point"]
+        elif td is not None and exit_id is not None:
+            # The geodesic engine measured this room and failed, but the egress graph *can* route out
+            # of it. A geometry defect must not read as "no way out" when the topology says otherwise:
+            # fall back to the approximate distance and say so, rather than dropping the room.
+            distance = round(bfs_distance, 1) if bfs_distance is not None else None
+            reachable = True
+            method = "fallback_centroid (geodesic grid disconnected)"
+            remote_point = None
+            note = td.get("reason")
+        elif td is not None:
+            distance = None
+            reachable = False
+            method = td["travel_distance_method"]
+            remote_point = td["most_remote_point"]
+            note = td.get("reason")
         else:
             distance = round(bfs_distance, 1) if bfs_distance is not None else None
             reachable = exit_id is not None
             method = "fallback_centroid"
             remote_point = None
+            if not reachable:
+                note = ("not measured by the geodesic engine and no door route to a final exit "
+                        "exists in the egress graph")
         occupiable = occ["occupant_load"] is None or occ["occupant_load"] > 0
 
         grounded.append({
@@ -210,6 +231,8 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
             "travel_distance_method": method,
             "most_remote_point": remote_point,
             "reachable": reachable,
+            # why the measurement degraded or failed; None when the geodesic engine measured it
+            "reachability_note": note,
         })
 
         if occ["not_assessed"]:
@@ -218,7 +241,8 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
                                  "action": "flagged, not silently passed"})
         if occupiable and not reachable:
             not_assessed.append({"element": gid, "name": sp["name"],
-                                 "missing": "no egress path to a ground-level final exit was found",
+                                 "missing": "no egress path to a ground-level final exit was found"
+                                            + (f" ({note})" if note else ""),
                                  "action": "flagged, not silently passed"})
 
     return {
@@ -226,6 +250,8 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
         "final_exits": list(final_exits.values()),
         "not_assessed": not_assessed,
         "excluded_measurement_zones": excluded_measurement_zones,
+        # what the geodesic engine could not do, for the same reason not_assessed exists
+        "travel_engine_report": travel_report,
     }
 
 

@@ -118,6 +118,8 @@ SCENARIO_SCHEMA = {
                     "travel_distance_method": {"type": ["string", "null"]},
                     "most_remote_point": {"type": ["array", "null"]},
                     "reachable": {"type": "boolean"},
+                    # why a measurement degraded or failed; null when the geodesic engine measured it
+                    "reachability_note": {"type": ["string", "null"]},
                 },
             },
         },

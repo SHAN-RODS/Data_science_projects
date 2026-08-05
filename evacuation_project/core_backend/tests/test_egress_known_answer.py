@@ -11,6 +11,8 @@ They assert the core invariant that the approximate travel distance is at least 
 
 import math
 
+from shapely.geometry import box
+
 from core_backend.egress import ground_spaces
 
 
@@ -106,3 +108,45 @@ def test_unreachable_space_is_flagged():
     assert x["reachable"] is False
     # an occupiable, unreachable space must be surfaced, never silently passed
     assert any(na["element"] == "X" for na in grounded["not_assessed"])
+    # ...and it must say why, so the next occurrence is diagnosable from the record alone
+    assert x["reachability_note"]
+
+
+def test_a_failed_raster_never_overrides_a_route_the_graph_can_find():
+    """A geometry defect must not read as "no way out" when the topology says otherwise.
+
+    Room A carries a footprint the geodesic engine cannot connect (no door bridges it into the
+    network), but the egress graph links A to the exit. Before this, the raster's verdict won and the
+    room was reported with no egress path at all; now it degrades to the approximate distance and
+    labels itself as degraded.
+    """
+    summary = {
+        "spaces": [
+            {"id": "A", "name": "A", "long_name": "Living", "area": 12.0,
+             "centroid": (0.0, 0.0, 0.0), "footprint": box(-2.0, -1.5, 2.0, 1.5),
+             "storey": {"id": "S1", "name": "Ground"}},
+            {"id": "B", "name": "B", "long_name": "Lobby", "area": 12.0,
+             "centroid": (30.0, 0.0, 0.0), "footprint": box(28.0, -1.5, 32.0, 1.5),
+             "storey": {"id": "S1", "name": "Ground"}},
+        ],
+        "doors": [{"id": "E", "name": "Exit", "width_m": 1.0, "position": (32.0, 0.0, 0.0)}],
+        "emergency_exits": [{"id": "E", "name": "Exit", "width_m": 1.0, "position": (32.0, 0.0, 0.0)}],
+        # topology says the exit door bounds A; the geometry puts A 30 m away, so no portal reaches it
+        "door_space_links": {"E": ["A", "B"]},
+        "stairs": [],
+        "stair_flights": [],
+        "storeys": _ground_storey(),
+    }
+    classified = [{"guid": "A", "use_type": "living"}, {"guid": "B", "use_type": "circulation"}]
+
+    grounded = ground_spaces(summary, classified)
+    a = next(s for s in grounded["spaces"] if s["guid"] == "A")
+
+    assert a["reachable"] is True
+    assert a["nearest_exit"] == "E"
+    assert a["travel_distance_m"] is not None
+    # the degradation is stated, not hidden
+    assert "disconnected" in a["travel_distance_method"]
+    assert a["reachability_note"]
+    # and it is no longer reported as having no egress path
+    assert not any("no egress path" in str(na["missing"]) for na in grounded["not_assessed"])

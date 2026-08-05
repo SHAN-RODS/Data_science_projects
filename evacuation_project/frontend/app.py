@@ -1,6 +1,5 @@
 import os
 import sys
-import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -10,10 +9,10 @@ if project_root not in sys.path:
 
 from core_backend.ifc_parser import parser_summary
 from core_backend.uk_regulation_checking import regulation_gate
+from core_backend.llm import select_llm
 from core_backend.scenario_generation_llm import build_full_scenario
 from core_backend.validation import validate
 from core_backend.export_results import export_records, build_records
-from core_backend.llm import select_llm
 
 load_dotenv()
 os.makedirs("uploads", exist_ok=True)
@@ -93,14 +92,6 @@ with st.sidebar:
             for key in ("gate_result", "gate_context", "ifc_path", "scenario_object"):
                 st.session_state[key] = None
             st.rerun()
-
-
-def _per_storey_occupants(spaces):
-    rollup = {}
-    for s in spaces:
-        storey = s.get("storey") or "Unknown"
-        rollup[storey] = rollup.get(storey, 0) + (s.get("occupant_load") or 0)
-    return rollup
 
 
 def render_gate(gate, label):
@@ -201,11 +192,6 @@ m2.metric("Total occupant load", building.get("total_occupant_load"))
 m3.metric("Total floor area (m²)", building.get("total_floor_area_m2"))
 m4.metric("Final exits", len(obj.get("exits", [])))
 m5.metric("Spaces", len(obj.get("spaces", [])))
-
-rollup = _per_storey_occupants(obj["spaces"])
-if any(rollup.values()):
-    st.caption("Occupant load by storey (computed from code floor-space factors)")
-    st.bar_chart(pd.DataFrame({"occupants": rollup}))
 
 not_assessed = obj.get("not_assessed", [])
 with st.expander(f"Not assessed — {len(not_assessed)} item(s) (never silently passed)",
