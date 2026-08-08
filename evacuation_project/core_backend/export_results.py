@@ -5,124 +5,105 @@ Two forms:
   * ``export_records`` — the deliverable: a flat array of six-field records, ONE per scenario
     (unique_id, description, relevant_ifc_element, regulatory_justification, ai_explanation, scenario).
 
-The deliverable is also the **input to an egress simulation study**, so each record is written to be
-self-contained: everything needed to set one simulation up and run it, and nothing that has to be
-looked up in another file. The simulator imports the *geometry* from the same IFC, so no geometry is
-carried here — every element is keyed on the IFC GlobalId, in metres, in IFC world coordinates.
+The deliverable is also the **input to an egress simulation study**. The simulator imports the
+*geometry* from the same IFC, so no geometry is carried here — every element is keyed on the IFC
+GlobalId, in metres, in IFC world coordinates.
 
+  ``unique_id``             SCN-001, SCN-002 … numbered in generation order.
   ``relevant_ifc_element``  every door, stair and lift the scenario runs over, with this scenario's
                             open/closed state.
-  ``scenario.simulation``   the AI-chosen set-up: movement model, pre-movement distribution and
-                            occupant profiles, each with its written basis.
-  ``scenario.occupancy``    computed per-room occupant counts, seed points, profile mix and goals.
-  ``scenario.benchmark_travel_distances``  our own measured distances — a validation target to check
-                            the simulator's navigation mesh against, NOT an input.
+  ``scenario.occupancy``    how many occupants this scenario evacuates, and in which occupancy state.
 
-That self-containment costs some repetition (``model``, the benchmark and ``not_assessed`` are the same
-in every record). It is worth it: one record is one runnable study.
+The full building object (``export_json``) keeps the longer working — the AI-chosen simulation
+set-up, per-room placement, benchmark distances, narrative and the unassessed rooms. The records
+deliverable carries only the fields above.
 """
 
 import json
 
-from core_backend.occupant_placement import BENCHMARK_NOTE, occupancy_block
-
-DOOR_FLOW_NOTE = ("door widths are the IFC values; leave the simulator's boundary-layer and "
-                  "specific-flow defaults unless the study states otherwise")
+from core_backend.exit_names import discounted_exit_ids, exit_names, named
 
 
-# ---------------------------------------------------------------------------------------------------
-# relevant_ifc_element — the components, with the per-scenario door states.
-# ---------------------------------------------------------------------------------------------------
 def _ifc_elements(obj, scn):
     """Every IFC element the scenario runs over: final exits, internal doors, stairs and lifts.
 
     Wider than "the exits this scenario names" because an egress simulation uses all of them — and
     ``state`` is what makes the list scenario-specific: an exit the scenario discounts is ``closed``.
+
+    Final exits also carry ``exit_name`` — the "Exit 3" the scenario's prose and conditions use, so a
+    reader can match a closed door to the sentence that closed it without decoding a GlobalId.
+
+    Neither ``position`` nor ``connects`` is carried: the simulator imports both from the same IFC
+    with the geometry, keyed on the GlobalId here. They stay in the full building object (``exits``,
+    ``doors``, ``circulation``) for anyone who wants to read them.
     """
-    discounted = set((scn.get("conditions") or {}).get("exits_discounted") or [])
+    names = exit_names(obj.get("exits", []))
+    discounted = set(discounted_exit_ids(scn))
     elements = []
 
-    def add(item, ifc_type, kind, connects, **extra):
+    def add(item, ifc_type, kind, **extra):
         elements.append({
             "id": item["id"],
             "ifc_type": ifc_type,
             "kind": kind,
             "name": item.get("name"),
             "width_m": item.get("width_m"),
-            "position": item.get("position"),
             "state": "closed" if item["id"] in discounted else "open",
-            "connects": connects or [],
             **extra,
         })
 
     for e in obj.get("exits", []):
-        add(e, "IfcDoor", "final_exit", [])
+        add(e, "IfcDoor", "final_exit", exit_name=named(e["id"], names))
     for d in obj.get("doors", []):
-        add(d, "IfcDoor", "internal_door", d.get("connects"))
+        add(d, "IfcDoor", "internal_door")
     for c in obj.get("circulation", []):
-        add(c, "IfcStair", "stair", c.get("connects_storeys"),
+        add(c, "IfcStair", "stair",
             rise_m=c.get("rise_m"), going_m=c.get("going_m"), slope_m=c.get("slope_m"))
     for t in obj.get("elevators", []):
         add(t, "IfcTransportElement",
-            "evacuation_elevator" if t.get("is_evac_lift") else "elevator", [],
+            "evacuation_elevator" if t.get("is_evac_lift") else "elevator",
             is_evac_lift=t.get("is_evac_lift"))
     return elements
 
 
-def _benchmark(obj):
-    """Our measured travel distances, labelled as what they are: something to check the simulation
-    against afterwards, not a number to feed into it."""
+def _occupancy(scn):
+    """This scenario's occupancy line: how many people are being evacuated, in which occupancy state.
+
+    Read from the computed occupancy block where one is attached, falling back to the conditions the
+    scenario was written against.
+    """
+    occ = scn.get("occupancy") or {}
+    conditions = scn.get("conditions") or {}
     return {
-        "note": BENCHMARK_NOTE,
-        "method": (obj.get("provenance") or {}).get("distance_method"),
-        "by_room": [{"guid": s["guid"], "storey": s.get("storey"),
-                     "travel_distance_m": s.get("travel_distance_m"),
-                     "most_remote_point": s.get("most_remote_point"),
-                     "nearest_exit": s.get("nearest_exit")}
-                    for s in obj.get("spaces", []) if s.get("travel_distance_m") is not None],
+        "occupants_total": occ.get("occupants_total", conditions.get("occupants_total")),
+        "occupancy_state": occ.get("occupancy_state", conditions.get("occupancy_state")),
     }
 
 
-def _simulation(scn):
-    """The scenario's AI-chosen simulation set-up, plus the one note the simulator needs about doors."""
-    sim = dict(scn.get("simulation") or {})
-    if sim:
-        sim["door_flow_note"] = DOOR_FLOW_NOTE
-    return sim
-
-
 def build_records(obj):
-    """One six-field record per AI-proposed scenario. IFC elements, occupant placement and travel
-    distances are resolved deterministically from the object (real ids, real computed numbers); the
-    reasoning fields and the simulation parameters come from the LLM."""
-    model = obj.get("model", {})
-    benchmark = _benchmark(obj)
-    not_assessed = obj.get("not_assessed", [])
+    """One six-field record per AI-proposed scenario, numbered SCN-001, SCN-002 … in scenario order.
 
+    The ids are assigned here rather than copied from the object, so the deliverable is uniformly
+    numbered even when re-exported from an object generated before that rule. IFC elements are
+    resolved deterministically from the object (real ids, real states); the reasoning fields come
+    from the LLM.
+    """
     records = []
-    for scn in obj.get("scenarios", []):
+    for number, scn in enumerate(obj.get("scenarios", []), start=1):
         records.append({
-            "unique_id": scn.get("id"),
+            "unique_id": f"SCN-{number:03d}",
             "description": scn.get("title"),
             "relevant_ifc_element": _ifc_elements(obj, scn),
             "regulatory_justification": scn.get("regulatory_justification"),
             "ai_explanation": scn.get("ai_explanation"),
             "scenario": {
-                # how to line this record up with the geometry the simulator imports from the IFC
-                "model": model,
                 "conditions": scn.get("conditions", {}),
-                "simulation": _simulation(scn),
-                # computed at generation time; recomputed here only for an object that predates it
-                "occupancy": scn.get("occupancy") or occupancy_block(obj, scn),
-                "benchmark_travel_distances": benchmark,
+                "occupancy": _occupancy(scn),
                 "occupant_distribution": scn.get("occupant_distribution", []),
                 "assumptions": scn.get("assumptions", []),
                 "routes": scn.get("routes", []),
                 "bottlenecks": scn.get("bottlenecks", []),
                 "risks": scn.get("risks", []),
-                "narrative": scn.get("narrative"),
-                # an unassessed room silently drops its occupants — this must travel with the record
-                "not_assessed": not_assessed,
             },
         })
     return records
@@ -167,5 +148,5 @@ if __name__ == "__main__":
         occ = record["scenario"]["occupancy"]
         closed = [e["id"] for e in record["relevant_ifc_element"] if e["state"] == "closed"]
         print(f"{record['unique_id']}: {len(record['relevant_ifc_element'])} IFC element(s) "
-              f"({len(closed)} closed) | placed {occ['placed_total']}/{occ['occupants_total']} "
-              f"occupants across {len(occ['by_room'])} room(s), {occ['unplaced_total']} unplaced")
+              f"({len(closed)} closed) | {occ['occupants_total']} occupant(s), "
+              f"{occ['occupancy_state']} occupancy")

@@ -7,6 +7,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from core_backend.exit_names import exit_names, name_exit_ids, named
 from core_backend.ifc_parser import parser_summary
 from core_backend.uk_regulation_checking import regulation_gate
 from core_backend.llm import select_llm
@@ -154,6 +155,8 @@ if obj is None:
 # ---- generated scenario view ----
 building = obj["building"]
 validation = obj.get("validation", {})
+# every exit is shown as "Exit 1", never as its IFC GlobalId; the ids stay in the downloaded JSON
+exit_labels = exit_names(obj.get("exits", []))
 
 st.subheader(f"Building — {building.get('project')}")
 
@@ -177,13 +180,13 @@ with vb3:
     else:
         st.warning(f"Fact-check: {len(validation.get('ungrounded_numbers', []))} number(s) to review")
 
-# The simulation parameters are the only AI-originated numbers, and placement decides whether the
-# study can actually be run — both are already invariants above, this just shows the detail.
+# The invariants above say pass/fail; this is the detail behind a failing one, so a problem with the
+# study set-up or with placing the occupants is never left as a single red word.
 sim_issues = validation.get("simulation_parameter_issues", [])
 place_issues = validation.get("placement_issues", [])
 if sim_issues or place_issues:
-    with st.expander(f"Simulation set-up — {len(sim_issues)} parameter issue(s), "
-                     f"{len(place_issues)} placement issue(s) to review", expanded=True):
+    with st.expander(f"Issues to review before running the study — {len(sim_issues)} parameter, "
+                     f"{len(place_issues)} placement", expanded=True):
         st.dataframe(sim_issues + place_issues, use_container_width=True, hide_index=True)
 
 m1, m2, m3, m4, m5 = st.columns(5)
@@ -192,6 +195,16 @@ m2.metric("Total occupant load", building.get("total_occupant_load"))
 m3.metric("Total floor area (m²)", building.get("total_floor_area_m2"))
 m4.metric("Final exits", len(obj.get("exits", [])))
 m5.metric("Spaces", len(obj.get("spaces", [])))
+
+with st.expander(f"Final exits ({len(obj.get('exits', []))}) — what each name refers to"):
+    st.caption("Exits are named Exit 1, Exit 2 … across the plan. The IFC name and GlobalId are here "
+               "so a name can be traced back to the door in the model.")
+    exit_by_id = {e["id"]: e for e in obj.get("exits", [])}
+    st.dataframe(
+        [{"exit": name, "width_m": exit_by_id[exit_id].get("width_m"),
+          "IFC name": exit_by_id[exit_id].get("name"), "IFC GlobalId": exit_id}
+         for exit_id, name in exit_labels.items()],          # in plan order, Exit 1 first
+        use_container_width=True, hide_index=True)
 
 not_assessed = obj.get("not_assessed", [])
 with st.expander(f"Not assessed — {len(not_assessed)} item(s) (never silently passed)",
@@ -204,11 +217,15 @@ with st.expander(f"Not assessed — {len(not_assessed)} item(s) (never silently 
 
 st.divider()
 
-st.subheader("Evacuation scenarios (AI-proposed)")
+st.subheader("Evacuation scenarios")
 scenarios = obj.get("scenarios", [])
 labels = {f"{s['id']} — {s.get('type')}": s for s in scenarios}
 choice = st.radio("Select a scenario variant:", list(labels.keys()), horizontal=True)
 scn = labels[choice]
+
+# A scenario generated before exits had names quotes GlobalIds in its prose; rewrite them for the
+# page so an object reloaded from disk reads the same way a fresh one does.
+scn = name_exit_ids(scn, exit_labels)
 
 st.markdown(f"#### {scn.get('title')}")
 cond = scn.get("conditions", {})
@@ -218,7 +235,9 @@ cc2.metric("Occupants to evacuate", cond.get("occupants_total"))
 cc3.metric("Exits available", len(cond.get("exits_available", [])))
 cc4.metric("Exits discounted", len(cond.get("exits_discounted", [])))
 if cond.get("exits_discounted"):
-    st.warning(f"Exit(s) discounted in this variant: {', '.join(cond['exits_discounted'])}")
+    # named() passes a name through unchanged, so an object saved before exits had names still reads
+    discounted = [str(named(e, exit_labels)) for e in cond["exits_discounted"]]
+    st.warning(f"Exit(s) discounted in this variant: {', '.join(discounted)}")
 
 st.markdown("**Narrative**")
 st.info(scn.get("narrative", ""))
@@ -246,74 +265,30 @@ with d2:
     for line in scn.get("risks", []):
         st.write(f"- {line}")
 
-st.markdown("**Routes (from → via → exit)**")
-if scn.get("routes"):
-    st.dataframe(scn["routes"], use_container_width=True, hide_index=True)
-
-# ---- simulation set-up for this scenario ----
-sim = scn.get("simulation", {})
-if sim:
-    st.markdown("**Simulation set-up** — the only AI-chosen numbers in the output, each with a basis")
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Movement model", sim.get("movement_model"))
-    s2.metric("Pre-movement (mean)", f"{(sim.get('pre_movement') or {}).get('mean_s')} s")
-    s3.metric("End time", f"{sim.get('end_time_s')} s")
-    s4.metric("Occupant profiles", len(sim.get("profiles", [])))
-    with st.expander("Pre-movement, occupant profiles and occupancy multipliers — with their basis"):
-        st.markdown("**Pre-movement**")
-        st.json(sim.get("pre_movement", {}))
-        st.markdown("**Occupant profiles**")
-        st.dataframe(sim.get("profiles", []), use_container_width=True, hide_index=True)
-        if sim.get("occupancy_multipliers"):
-            st.markdown("**Occupancy multipliers** (how `occupants_total` was reached)")
-            st.dataframe(sim["occupancy_multipliers"], use_container_width=True, hide_index=True)
-
-# ---- where this scenario's occupants start ----
+# The occupants this scenario could not seed is a safety statement, not set-up detail, so it stays
+# even though the placement working itself is not shown on the page (it travels in the JSON).
 occupancy = scn.get("occupancy") or {}
-if occupancy:
-    st.markdown("**Occupant placement** — computed per room, keyed on the IFC GlobalIds, in metres")
-    o1, o2, o3, o4 = st.columns(4)
-    o1.metric("Occupants placed",
-              f"{occupancy.get('placed_total')} / {occupancy.get('occupants_total')}")
-    o2.metric("Rooms seeded", len(occupancy.get("by_room", [])))
-    o3.metric("Unplaced (no egress path)", occupancy.get("unplaced_total"))
-    o4.metric("Unallocated (no room left)", occupancy.get("unallocated_total"))
-    if occupancy.get("unallocated_why"):
-        st.warning(occupancy["unallocated_why"])
-    if occupancy.get("by_room"):
-        st.dataframe(occupancy["by_room"], use_container_width=True, hide_index=True)
-    st.caption(occupancy.get("position_note", ""))
-    if occupancy.get("unplaced_total"):
-        st.warning(f"{occupancy['unplaced_total']} occupant(s) sit in "
-                   f"{len(occupancy.get('unplaced_rooms', []))} room(s) with no traced egress path. "
-                   f"They are reported, not moved into rooms that can escape — a simulation run from "
-                   f"this record will be short by that many people until those rooms are resolved.")
-        with st.expander("Rooms whose occupants could not be placed"):
-            st.dataframe(occupancy["unplaced_rooms"], use_container_width=True, hide_index=True)
-    if (occupancy.get("rerouted_rooms") or {}).get("count"):
-        st.info(f"{occupancy['rerouted_rooms']['count']} room(s) aim at the generic nearest-available "
-                f"exit: {occupancy['rerouted_rooms']['why']}")
-
-st.divider()
-
-with st.expander(f"Spaces ({len(obj['spaces'])}) — occupant load, nearest exit and travel distance are "
-                 f"computed; use-type is AI-classified"):
-    st.dataframe(obj["spaces"], use_container_width=True, hide_index=True)
+if occupancy.get("unplaced_total"):
+    st.warning(f"{occupancy['unplaced_total']} occupant(s) sit in "
+               f"{len(occupancy.get('unplaced_rooms', []))} room(s) with no traced egress path. "
+               f"They are reported, not moved into rooms that can escape — a simulation run from "
+               f"this record will be short by that many people until those rooms are resolved.")
+if occupancy.get("unallocated_why"):
+    st.warning(occupancy["unallocated_why"])
 
 st.divider()
 
 st.subheader("Export")
-st.caption("The deliverable is one JSON: a record per scenario — unique_id, description, "
-           "relevant_ifc_element, regulatory_justification, ai_explanation and the scenario itself. "
-           "Each record is a complete egress-simulation input. Import the **same IFC** into the "
-           "simulator for the geometry; the record supplies what the IFC cannot — occupant counts and "
-           "seed points per room, which exits are open, and the profiles, goals and pre-movement times "
-           "to run it with, all keyed on the IFC GlobalIds in metres.")
+st.caption("The deliverable is one JSON: a record per scenario (SCN-001, SCN-002 …) — unique_id, "
+           "description, relevant_ifc_element, regulatory_justification, ai_explanation and the "
+           "scenario itself. Import the **same IFC** into the simulator for the geometry; the record "
+           "supplies what the IFC cannot — which exits are open, and how many occupants evacuate in "
+           "which occupancy state, keyed on the IFC GlobalIds in metres. Exits read as **Exit 1, "
+           "Exit 2 …** throughout; each one still carries its GlobalId beside the name, so the "
+           "simulator has what it needs.")
 records_json = export_records(obj)
 with st.expander("Preview records JSON before downloading", expanded=True):
     st.json(build_records(obj))
 st.download_button("Download JSON", data=records_json,
                    file_name="evacuation_scenario_records.json", mime="application/json",
                    use_container_width=True)
-with st.expander("Full building object (reference — spaces, exits, gate, provenance)"):
-    st.json(obj)

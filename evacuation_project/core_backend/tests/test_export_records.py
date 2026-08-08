@@ -1,8 +1,9 @@
 """The exported deliverable is a flat array of six-field records, one per scenario (no API / no IFC).
 
-Each record must also stand alone as an egress-simulation input: the IFC elements with this scenario's
-open/closed states, the AI-chosen simulation set-up, the computed occupant placement, the benchmark
-distances and the unassessed rooms — all inside those same six fields, and all as JSON.
+Each record carries the egress-simulation set-up: the IFC elements with this scenario's open/closed
+states, the AI-chosen simulation parameters and the scenario's occupancy — all inside those same six
+fields, and all as JSON. The longer working (per-room placement, benchmark distances, narrative,
+unassessed rooms) stays in the full building object and is deliberately kept out of the records.
 """
 
 import json
@@ -76,9 +77,15 @@ def test_one_record_per_scenario_with_six_keys():
         assert set(r.keys()) == SIX_KEYS
 
 
+def test_records_are_numbered_scn_001_upwards():
+    """The deliverable numbers its own records, whatever ids the object happens to carry."""
+    recs = build_records(_obj())
+    assert [r["unique_id"] for r in recs] == ["SCN-001", "SCN-002"]
+
+
 def test_relevant_ifc_elements_resolve_real_ids():
     recs = build_records(_obj())
-    blocked = next(r for r in recs if r["unique_id"] == "SCN-EXIT-BLOCKED")
+    blocked = next(r for r in recs if r["unique_id"] == "SCN-002")
     ids = {e["id"] for e in blocked["relevant_ifc_element"]}
     assert {"E1", "E2", "ST1"} <= ids                       # available + discounted exits + stair
     types = {e["ifc_type"] for e in blocked["relevant_ifc_element"]}
@@ -90,7 +97,6 @@ def test_scenario_body_is_nested():
     recs = build_records(_obj())
     base = recs[0]
     assert base["scenario"]["conditions"]["occupants_total"] == 20
-    assert "narrative" in base["scenario"]
 
 
 # ---- the record as a simulation input --------------------------------------------------------------
@@ -100,52 +106,46 @@ def test_ifc_elements_cover_doors_stairs_and_lifts_with_a_state():
     kinds = {e["id"]: e["kind"] for e in recs[0]["relevant_ifc_element"]}
     assert kinds == {"E1": "final_exit", "E2": "final_exit", "D1": "internal_door",
                      "ST1": "stair", "LIFT1": "elevator"}
-    # connects stays a real JSON array, not a delimited string
-    door = next(e for e in recs[0]["relevant_ifc_element"] if e["id"] == "D1")
-    assert door["connects"] == ["R1", "R2"]
     stair = next(e for e in recs[0]["relevant_ifc_element"] if e["id"] == "ST1")
-    assert stair["connects"] == ["G", "First"] and stair["rise_m"] == 3.0
+    assert stair["rise_m"] == 3.0 and stair["going_m"] == 4.5
+
+
+def test_geometry_the_simulator_reads_from_the_ifc_is_not_repeated_here():
+    """``position`` and ``connects`` come with the geometry on IFC import, keyed on the same
+    GlobalId — repeating them in the record only invites the two copies to disagree."""
+    for element in build_records(_obj())[0]["relevant_ifc_element"]:
+        assert "position" not in element
+        assert "connects" not in element
 
 
 def test_a_discounted_exit_is_closed_in_that_scenario_only():
     recs = {r["unique_id"]: r for r in build_records(_obj())}
-    base = {e["id"]: e["state"] for e in recs["SCN-BASE"]["relevant_ifc_element"]}
-    blocked = {e["id"]: e["state"] for e in recs["SCN-EXIT-BLOCKED"]["relevant_ifc_element"]}
+    base = {e["id"]: e["state"] for e in recs["SCN-001"]["relevant_ifc_element"]}
+    blocked = {e["id"]: e["state"] for e in recs["SCN-002"]["relevant_ifc_element"]}
     assert base["E1"] == base["E2"] == "open"
     assert blocked["E1"] == "closed" and blocked["E2"] == "open"
 
 
-def test_each_record_carries_everything_a_run_needs():
-    """A record must stand alone: no other file should be needed to set the simulation up."""
+def test_the_simulation_set_up_stays_in_the_building_object():
+    """The AI-chosen parameters are reviewed against the full object, not shipped in the record."""
+    obj = _obj()
+    assert obj["scenarios"][0]["simulation"]                    # still generated and validated
+    for rec in build_records(obj):
+        assert "simulation" not in rec["scenario"]
+
+
+def test_the_record_body_is_the_slim_set_of_fields():
+    """The working that stays in the building object must not leak back into the deliverable."""
+    body = {"conditions", "occupancy", "occupant_distribution",
+            "assumptions", "routes", "bottlenecks", "risks"}
     for rec in build_records(_obj()):
-        scn = rec["scenario"]
-        assert scn["model"]["units"] == "m"
-        assert scn["simulation"]["pre_movement"]["basis"]
-        assert scn["simulation"]["profiles"][0]["speed_ms_mean"] == 1.19
-        assert scn["simulation"]["door_flow_note"]
-        assert scn["benchmark_travel_distances"]["by_room"][0]["travel_distance_m"] == 15.0
-        assert "not a simulation input" in scn["benchmark_travel_distances"]["note"]
-        # an unassessed room drops its occupants from the run — it has to travel with the record
-        assert scn["not_assessed"] == [{"element": "R9", "missing": "no egress path"}]
+        assert set(rec["scenario"].keys()) == body
 
 
-def test_occupancy_places_the_occupants_per_room_with_a_seed_point():
-    recs = build_records(_obj())
-    occupancy = recs[0]["scenario"]["occupancy"]
-    assert (occupancy["placed_total"] + occupancy["unplaced_total"]
-            + occupancy["unallocated_total"]) == 20
-    room = occupancy["by_room"][0]
-    assert room["guid"] == "R1" and room["occupants"] == 20
-    assert room["seed_point"] == [2.0, 1.5, 0.0]
-    assert room["goal"] == "goto_E1"
-    assert sum(room["profiles"].values()) == room["occupants"]
-
-
-def test_no_room_is_sent_to_an_exit_this_scenario_discounts():
+def test_occupancy_is_the_headline_total_and_state_only():
     for rec in build_records(_obj()):
-        closed = set(rec["scenario"]["conditions"]["exits_discounted"])
-        for room in rec["scenario"]["occupancy"]["by_room"]:
-            assert room["goal"].removeprefix("goto_") not in closed
+        occupancy = rec["scenario"]["occupancy"]
+        assert occupancy == {"occupants_total": 20, "occupancy_state": "night"}
 
 
 def test_the_deliverable_is_json_all_the_way_down():

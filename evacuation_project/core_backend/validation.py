@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from jsonschema import Draft202012Validator
 
+from core_backend.exit_names import exit_names, unknown_exit_references
 from core_backend.scenario_schema import SCENARIO_SCHEMA
 
 EXIT_CAPACITY_PERSONS_PER_M = 200
@@ -102,16 +103,19 @@ def _scenario_text(scn, id_tokens):
     for r in scn.get("routes", []) or []:
         parts += [r.get("from_area", ""), r.get("via", ""), r.get("to_exit", ""), r.get("note", "")]
     text = " ".join(str(p) for p in parts)
-    for token in id_tokens:
-        if token:
-            text = text.replace(token, " ")
+    # longest first, so stripping "Exit 1" cannot leave the "3" of an "Exit 13" behind
+    for token in sorted((t for t in id_tokens if t), key=len, reverse=True):
+        text = text.replace(token, " ")
     return text
 
 
 def number_factcheck(obj):
     """Return the list of narrative numbers that do not trace to the structured record."""
     allowed = _allowed_floats(obj)
-    id_tokens = {e.get("id") for e in obj["exits"]} | {s.get("guid") for s in obj["spaces"]}
+    # exit names carry a number ("Exit 13"), so they are stripped out with the ids before the scan —
+    # the name is a label, not a quantity the narrative is claiming
+    id_tokens = ({e.get("id") for e in obj["exits"]} | {s.get("guid") for s in obj["spaces"]}
+                 | set(exit_names(obj["exits"]).values()))
     ungrounded = []
     for scn in obj["scenarios"]:
         for token in _NUM_RE.findall(_scenario_text(scn, id_tokens)):
@@ -262,6 +266,9 @@ def validate(obj):
 
     ungrounded = number_factcheck(obj)
 
+    # the AI refers to exits by name, so a name it invented would close nothing and go unnoticed
+    unknown_exits = unknown_exit_references(obj)
+
     # Objects generated before the simulation block existed carry no parameters to check; report the
     # two invariants as None rather than failing them.
     has_sim = any(scn.get("simulation") for scn in obj["scenarios"])
@@ -277,10 +284,12 @@ def validate(obj):
             "occupant_totals_reconcile": reconcile,
             "occupants_within_exit_capacity": within_capacity,
             "travel_distance_non_negative": dist_ok,
+            "every_exit_named_exists": not unknown_exits,
             # simulation-input checks; None when the object carries no simulation block at all
             "simulation_parameters_in_range": (not sim_issues) if has_sim else None,
             "every_occupant_placed_with_a_goal": (not place_issues) if has_sim else None,
         },
+        "unknown_exit_references": unknown_exits,
         "exit_capacity_persons": round(capacity),
         "number_factcheck": "passed" if not ungrounded else "review",
         "ungrounded_numbers": ungrounded,

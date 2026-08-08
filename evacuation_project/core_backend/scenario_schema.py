@@ -52,6 +52,9 @@ SCENARIO_SCHEMA = {
                 "required": ["id"],
                 "properties": {
                     "id": {"type": "string"},
+                    # the plain name the scenarios, routes and app refer to this exit by ("Exit 1");
+                    # `name` stays the IFC's own label so the door is still findable in the model
+                    "exit_name": {"type": ["string", "null"]},
                     "name": {"type": ["string", "null"]},
                     "type": {"type": "string"},
                     "width_m": {"type": ["number", "null"]},
@@ -114,6 +117,7 @@ SCENARIO_SCHEMA = {
                     "occupant_load": {"type": ["integer", "null"], "minimum": 0},
                     "occupant_basis": {"type": ["string", "null"]},
                     "nearest_exit": {"type": ["string", "null"]},
+                    "nearest_exit_name": {"type": ["string", "null"]},
                     "travel_distance_m": {"type": ["number", "null"], "minimum": 0},
                     "travel_distance_method": {"type": ["string", "null"]},
                     "most_remote_point": {"type": ["array", "null"]},
@@ -130,6 +134,7 @@ SCENARIO_SCHEMA = {
                 "required": ["exit_discounted", "per_storey"],
                 "properties": {
                     "exit_discounted": {"type": "string"},
+                    "exit_discounted_name": {"type": ["string", "null"]},
                     "method": {"type": "string"},
                     "per_storey": {
                         "type": "array",
@@ -160,8 +165,14 @@ SCENARIO_SCHEMA = {
                         "type": "object",
                         "required": ["exits_available", "exits_discounted", "occupants_total"],
                         "properties": {
+                            # the plain names ("Exit 1"), with the GlobalIds they resolve to beside
+                            # them — the names are for the reader, the ids for the simulator
                             "exits_available": {"type": "array", "items": {"type": "string"}},
                             "exits_discounted": {"type": "array", "items": {"type": "string"}},
+                            "exits_available_ifc_ids": {"type": "array",
+                                                        "items": {"type": "string"}},
+                            "exits_discounted_ifc_ids": {"type": "array",
+                                                         "items": {"type": "string"}},
                             "occupancy_state": {"type": "string"},
                             "occupants_total": {"type": "integer", "minimum": 0},
                         },
@@ -256,6 +267,7 @@ SCENARIO_SCHEMA = {
                                         "seed_point": {"type": ["array", "null"]},
                                         "profiles": {"type": "object"},
                                         "goal": {"type": "string"},
+                                        "goal_exit": {"type": ["string", "null"]},
                                     },
                                 },
                             },

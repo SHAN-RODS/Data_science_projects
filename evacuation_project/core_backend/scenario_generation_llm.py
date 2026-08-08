@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from core_backend.llm import select_llm
 from core_backend.egress import build_graph, ground_spaces, discount_exit, stair_adjacency
+from core_backend.exit_names import exit_names, name_exit_ids, named, resolve_exit_ids
 from core_backend.occupancy import JURISDICTION_SOURCE
 from core_backend.ifc_parser import parser_summary
 from core_backend.occupant_placement import attach_occupancy
@@ -40,14 +41,16 @@ def _round(value, ndigits):
 class Route(BaseModel):
     from_area: str = Field(description="where occupants start (a storey or space name)")
     via: str = Field(default="", description="circulation/stair route taken")
-    to_exit: str = Field(description="the exit id or name they leave by")
+    to_exit: str = Field(description="the exit name they leave by, e.g. 'Exit 2'")
     note: str = Field(default="", description="short note, e.g. approx distance or a caveat")
 
 
 class ScenarioConditions(BaseModel):
-    exits_available: List[str] = Field(description="exit ids that stay open in this scenario")
+    exits_available: List[str] = Field(description="exit names that stay open in this scenario, "
+                                                   "e.g. ['Exit 1', 'Exit 2']")
     exits_discounted: List[str] = Field(default_factory=list,
-                                        description="exit ids assumed blocked/unavailable")
+                                        description="exit names assumed blocked/unavailable, "
+                                                    "e.g. ['Exit 3']")
     occupancy_state: str = Field(description="e.g. 'night', 'day', 'peak occupancy'")
     occupants_total: int = Field(description="occupants to evacuate under this scenario's state; must "
                                              "not exceed the computed total occupant load")
@@ -102,7 +105,8 @@ class SimulationSetup(BaseModel):
 
 
 class ScenarioContent(BaseModel):
-    id: str = Field(description="short id you assign, e.g. 'SCN-BASE', 'SCN-EXIT-BLOCKED'")
+    # no id field: the scenarios are numbered SCN-001, SCN-002 … on assembly, so the model cannot
+    # hand back a duplicate or a differently-styled id
     type: str = Field(description="e.g. 'base_case', 'one_exit_discounted'")
     title: str
     conditions: ScenarioConditions
@@ -135,7 +139,9 @@ _SYSTEM = (
     "distances by measuring the walked path over the real floor plan. Use them exactly as supplied. "
     "Never recompute, re-estimate, scale or round them differently, and never invent an occupant count, "
     "a distance, a room or an exit. Every number in your prose must appear verbatim in the facts below. "
-    "Refer to exits only by the ids given.\n\n"
+    "Refer to exits only by the NAMES given below — 'Exit 1', 'Exit 2' and so on — everywhere: in "
+    "exits_available, exits_discounted, the routes and the prose. Do not invent an exit name, do not "
+    "renumber them, and never quote an IFC GlobalId (the ids are resolved from the names for you).\n\n"
     "YOUR TASK IS THE SCENARIO SET.\n"
     "Create AT LEAST FOUR distinct evacuation scenarios, generated autonomously from the building "
     "geometry, storey layout, space types, occupant distribution, exit locations, computed travel "
@@ -234,7 +240,7 @@ def _storey_rollup(grounded):
     return rollup
 
 
-def _degraded_cases(summary, classified, grounded, jurisdiction, limit=DISCOUNT_VARIANTS):
+def _degraded_cases(summary, classified, grounded, jurisdiction, names, limit=DISCOUNT_VARIANTS):
     """Recompute egress with each of the busiest exits unavailable, so the AI's degraded scenarios have
     real numbers to cite.
 
@@ -249,6 +255,7 @@ def _degraded_cases(summary, classified, grounded, jurisdiction, limit=DISCOUNT_
         variant = discount_exit(summary, classified, exit_id, jurisdiction=jurisdiction)
         cases.append({
             "exit_discounted": exit_id,
+            "exit_discounted_name": named(exit_id, names),
             "method": "egress re-measured with this exit removed (same computation as the base case)",
             "per_storey": [
                 {"storey": storey, "occupants": row["occupants"],
@@ -260,7 +267,12 @@ def _degraded_cases(summary, classified, grounded, jurisdiction, limit=DISCOUNT_
     return cases
 
 
-def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded):
+def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded, names):
+    """The computed facts, written with the exits' plain names.
+
+    GlobalIds are deliberately kept out of the exit lines: the model can only quote what it is shown,
+    so the surest way to stop a GUID appearing in the output is never to put one in front of it.
+    """
     spaces = grounded["spaces"]
     lines = [
         f"Building: {building['project']} | storeys: {building['storeys']} | "
@@ -273,9 +285,10 @@ def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
         lines.append(f"  - {s.get('name')}: elevation={_round(s.get('elevation_m'), 2)}, "
                      f"height_above_ground={_round(s.get('height_above_ground_m'), 2)}")
 
-    lines += ["", "Final (ground-level) exits — occupants leave by these ids:"]
-    for e in exits:
-        lines.append(f"  - {e['id']} (name={e.get('name')}, width_m={_round(e.get('width_m'), 2)})")
+    lines += ["", "Final (ground-level) exits — occupants leave by these, refer to them by NAME:"]
+    width_of = {e["id"]: e.get("width_m") for e in exits}
+    for exit_id, name in names.items():          # names are already in plan order
+        lines.append(f"  - {name} (width_m={_round(width_of.get(exit_id), 2)})")
 
     if stairs:
         lines += ["", "Internal stairs (connect storeys):"]
@@ -295,7 +308,7 @@ def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
         for s in longest:
             storey = (s["storey"] or {}).get("name")
             lines.append(f"  - {s['use_type']} on {storey}: {s['travel_distance_m']} m "
-                         f"to exit {s['nearest_exit']}")
+                         f"to {named(s['nearest_exit'], names)}")
 
     lines += ["", "Spaces (guid | use_type | storey | area m2 | OCCUPANTS | travel distance m | "
                   "nearest exit | name):"]
@@ -303,13 +316,13 @@ def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
         storey = (s["storey"] or {}).get("name")
         lines.append(f"  - {s['guid']} | {s['use_type']} | storey={storey} | "
                      f"area={_round(s['area_m2'], 1)} | occupants={s['occupant_load']} | "
-                     f"travel_m={s['travel_distance_m']} | exit={s['nearest_exit']} | "
-                     f"name={s['name']!r}")
+                     f"travel_m={s['travel_distance_m']} | "
+                     f"exit={named(s['nearest_exit'], names)} | name={s['name']!r}")
 
     if degraded:
         lines += ["", "DEGRADED-CASE FACTS (computed — egress re-measured with one exit unavailable):"]
         for case in degraded:
-            lines.append(f"  If exit {case['exit_discounted']} is UNAVAILABLE:")
+            lines.append(f"  If {named(case['exit_discounted'], names)} is UNAVAILABLE:")
             for row in case["per_storey"]:
                 lines.append(f"    - {row['storey']}: occupants={row['occupants']} "
                              f"max_travel_m={row['max_travel_distance_m']} "
@@ -344,7 +357,7 @@ def _building_block(summary, grounded, jurisdiction):
     }
 
 
-def _spaces_block(grounded, classified):
+def _spaces_block(grounded, classified, names):
     conf = {c["guid"]: c for c in classified}
     out = []
     for s in grounded["spaces"]:
@@ -361,7 +374,9 @@ def _spaces_block(grounded, classified):
             "centroid": [_round(v, 2) for v in s["centroid"]] if s["centroid"] else None,
             "occupant_load": s["occupant_load"],
             "occupant_basis": s["occupant_basis"],
+            # the GlobalId a simulator keys on, and the name everything readable refers to it by
             "nearest_exit": s["nearest_exit"],
+            "nearest_exit_name": named(s["nearest_exit"], names),
             "travel_distance_m": _round(s["travel_distance_m"], 1),
             "travel_distance_method": s.get("travel_distance_method"),
             "most_remote_point": s.get("most_remote_point"),
@@ -376,10 +391,17 @@ def _point(p):
     return [_round(v, 2) for v in p] if p else None
 
 
-def _exits_block(exits):
-    return [{"id": e["id"], "name": e.get("name"), "type": "final_exit",
-             "width_m": _round(e.get("width_m"), 2), "position": _point(e.get("position"))}
-            for e in exits]
+def _exits_block(exits, names):
+    """The final exits, each carrying the plain name the rest of the output refers to it by.
+
+    ``name`` stays the IFC's own label (a Revit type string, usually) so the door can still be found
+    in the model; ``exit_name`` is what a reader sees.
+    """
+    order = {exit_id: n for n, exit_id in enumerate(names)}      # names are in plan order
+    return [{"id": e["id"], "exit_name": named(e["id"], names), "name": e.get("name"),
+             "type": "final_exit", "width_m": _round(e.get("width_m"), 2),
+             "position": _point(e.get("position"))}
+            for e in sorted(exits, key=lambda e: order.get(e["id"], len(order)))]
 
 
 # an IfcStair's base and top are matched to storey elevations within this tolerance
@@ -456,26 +478,36 @@ def _model_block(summary):
     }
 
 
-def _assemble_scenario(sc):
+def _assemble_scenario(sc, number, names):
+    """One AI-written scenario, with its id assigned here in generation order (SCN-001, SCN-002, …)
+    rather than by the model, so the ids are uniform and cannot collide.
+
+    The model names exits ("Exit 3"); the matching GlobalIds are resolved here and carried beside
+    them, so the conditions read as English while a simulator still has the ids to key on. The prose
+    is swept for GlobalIds on the way past — the model is never shown one, so this should be a no-op,
+    but a GUID in a bottleneck line is exactly the thing this rename exists to stop.
+    """
     return {
-        "id": sc.id,
+        "id": f"SCN-{number:03d}",
         "type": sc.type,
-        "title": sc.title,
+        "title": name_exit_ids(sc.title, names),
         "conditions": {
-            "exits_available": sc.conditions.exits_available,
-            "exits_discounted": sc.conditions.exits_discounted,
+            "exits_available": name_exit_ids(sc.conditions.exits_available, names),
+            "exits_discounted": name_exit_ids(sc.conditions.exits_discounted, names),
+            "exits_available_ifc_ids": resolve_exit_ids(sc.conditions.exits_available, names),
+            "exits_discounted_ifc_ids": resolve_exit_ids(sc.conditions.exits_discounted, names),
             "occupancy_state": sc.conditions.occupancy_state,
             "occupants_total": sc.conditions.occupants_total,
         },
-        "assumptions": sc.assumptions,
-        "occupant_distribution": sc.occupant_distribution,
-        "routes": [r.model_dump() for r in sc.routes],
-        "bottlenecks": sc.bottlenecks,
-        "risks": sc.risks,
-        "narrative": sc.narrative,
+        "assumptions": name_exit_ids(sc.assumptions, names),
+        "occupant_distribution": name_exit_ids(sc.occupant_distribution, names),
+        "routes": [name_exit_ids(r.model_dump(), names) for r in sc.routes],
+        "bottlenecks": name_exit_ids(sc.bottlenecks, names),
+        "risks": name_exit_ids(sc.risks, names),
+        "narrative": name_exit_ids(sc.narrative, names),
         "simulation": sc.simulation.model_dump(),
-        "regulatory_justification": sc.regulatory_justification,
-        "ai_explanation": sc.ai_explanation,
+        "regulatory_justification": name_exit_ids(sc.regulatory_justification, names),
+        "ai_explanation": name_exit_ids(sc.ai_explanation, names),
     }
 
 
@@ -532,12 +564,15 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
     stairs = summary.get("stairs", [])
     storeys = summary.get("storeys", [])
 
+    # "Exit 1", "Exit 2" … — what the model, the app and the record all call the exits by
+    names = exit_names(exits)
+
     building = _building_block(summary, grounded, jurisdiction)
-    degraded = _degraded_cases(summary, classified, grounded, jurisdiction)
+    degraded = _degraded_cases(summary, classified, grounded, jurisdiction, names)
 
     # ---- the single API call: which scenarios are worth generating, and their write-up ----------
     reg_refs = _reg_refs(jurisdiction)
-    facts = _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
+    facts = _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded, names)
     prompt = f"{_SYSTEM}\n\n=== COMPUTED BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{_TASK}"
 
     analysis = _invoke_structured(llm, prompt)
@@ -556,14 +591,15 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
         },
         "model": _model_block(summary),
         "building": building,
-        "exits": _exits_block(exits),
+        "exits": _exits_block(exits, names),
         "doors": _doors_block(summary, exits),
         "circulation": _circulation_block(summary),
         "stair_links": _stair_links_block(summary, classified),
         "elevators": _elevators_block(summary),
-        "spaces": _spaces_block(grounded, classified),
+        "spaces": _spaces_block(grounded, classified, names),
         "degraded_cases": degraded,
-        "scenarios": [_assemble_scenario(sc) for sc in analysis.scenarios],
+        "scenarios": [_assemble_scenario(sc, n, names)
+                      for n, sc in enumerate(analysis.scenarios, start=1)],
         "regulation_check": gate,
         "validation": {},
         "not_assessed": grounded["not_assessed"],

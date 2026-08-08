@@ -14,14 +14,11 @@ unplaced rather than moved into the rooms that can escape — redistributing the
 simulation rooms holding several times the people they actually hold.
 """
 
+from core_backend.exit_names import discounted_exit_ids, exit_names, named
+
 # Occupants of one room all start at its centroid; the simulator should scatter them from there.
 POSITION_NOTE = ("all occupants of a room share the room centroid as their seed point — enable the "
                  "simulator's 'randomize occupant positions' so they scatter within the room")
-
-BENCHMARK_NOTE = ("computed geodesic travel distance from each room's most remote point (our own "
-                  "measurement over the IFC floor geometry). This is a VALIDATION TARGET, not a "
-                  "simulation input: compare it against the distance the simulator's navigation mesh "
-                  "produces for the same room.")
 
 ALLOCATION_METHOD = ("computed per-room occupant load, scaled by the scenario's per-use_type "
                      "multipliers, then largest-remainder rounded onto occupants_total. "
@@ -152,7 +149,7 @@ def _goal(space, discounted):
 
 def rerouted_rooms(obj, scenario):
     """Rooms whose computed nearest exit is unavailable in this scenario, so their goal is generic."""
-    discounted = set((scenario.get("conditions") or {}).get("exits_discounted") or [])
+    discounted = set(discounted_exit_ids(scenario))
     space_by_guid = {s["guid"]: s for s in obj.get("spaces", [])}
     return sorted(guid for guid in allocate_occupants(obj, scenario)
                   if _goal(space_by_guid[guid], discounted) == NEAREST_AVAILABLE)
@@ -180,7 +177,8 @@ def occupancy_block(obj, scenario):
     space_by_guid = {s["guid"]: s for s in obj.get("spaces", [])}
     conditions = scenario.get("conditions") or {}
     sim = scenario.get("simulation") or {}
-    discounted = set(conditions.get("exits_discounted") or [])
+    discounted = set(discounted_exit_ids(scenario))
+    names = exit_names(obj.get("exits", []))
     multipliers = {m["use_type"]: m["multiplier"] for m in sim.get("occupancy_multipliers") or []}
     capacity = int(sum(_scenario_weights(obj, scenario).values()))
 
@@ -207,7 +205,11 @@ def occupancy_block(obj, scenario):
             "occupants": n,
             "seed_point": space.get("centroid"),
             "profiles": dict(sorted(mix.items())),
+            # `goal` keys on the GlobalId a simulator needs; `goal_exit` is the same instruction in
+            # words, so the block can be read without looking a GUID up
             "goal": goal,
+            "goal_exit": ("nearest available exit" if goal == NEAREST_AVAILABLE
+                          else named(space.get("nearest_exit"), names)),
         })
 
     unplaced_rooms = [{
