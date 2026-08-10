@@ -18,7 +18,7 @@ ALLOCATION_METHOD = ("computed per-room occupant load, scaled by the scenario's 
 REROUTE_REASON = ("their computed nearest exit is unavailable in this scenario, so their occupants are "
                   "given the generic nearest-available-exit goal rather than a closed door")
 
-def _scenario_weights(obj, scenario):
+def scenario_weights(obj, scenario):
     sim = scenario.get("simulation") or {}
     multipliers = {m["use_type"]: m["multiplier"] for m in sim.get("occupancy_multipliers") or []}
     weights = {}
@@ -35,7 +35,7 @@ def scenario_occupancy(obj, scenario):
     target = (scenario.get("conditions") or {}).get("occupants_total") or 0
     space_by_guid = {s["guid"]: s for s in obj.get("spaces", [])}
 
-    weights = _scenario_weights(obj, scenario)
+    weights = scenario_weights(obj, scenario)
     capacity = sum(weights.values())
     if not weights or capacity <= 0 or target <= 0:
         return {}, {}, max(target, 0)
@@ -61,7 +61,7 @@ def scenario_occupancy(obj, scenario):
 def allocate_occupants(obj, scenario):
     return scenario_occupancy(obj, scenario)[0]
 
-def _profile_sequence(profiles, total):
+def profile_sequence(profiles, total):
     if not profiles:
         return ["default"] * total
     fractions = {p["name"]: float(p.get("fraction") or 0) for p in profiles}
@@ -99,7 +99,7 @@ def rerouted_rooms(obj, scenario):
     return sorted(guid for guid in allocate_occupants(obj, scenario)
                   if _goal(space_by_guid[guid], discounted) == NEAREST_AVAILABLE)
 
-def _why_unplaced(space, multipliers):
+def why_unplaced(space, multipliers):
     if not space.get("reachable"):
         return "no egress path to a final exit was found — see not_assessed"
     if not space.get("centroid"):
@@ -116,9 +116,9 @@ def occupancy_block(obj, scenario):
     discounted = set(discounted_exit_ids(scenario))
     names = exit_names(obj.get("exits", []))
     multipliers = {m["use_type"]: m["multiplier"] for m in sim.get("occupancy_multipliers") or []}
-    capacity = int(sum(_scenario_weights(obj, scenario).values()))
+    capacity = int(sum(scenario_weights(obj, scenario).values()))
 
-    sequence = _profile_sequence(sim.get("profiles") or [], sum(allocation.values()))
+    sequence = profile_sequence(sim.get("profiles") or [], sum(allocation.values()))
 
     by_room, taken, rerouted = [], 0, []
     for guid in sorted(allocation):
@@ -152,7 +152,7 @@ def occupancy_block(obj, scenario):
         "use_type": space_by_guid[guid].get("use_type"),
         "computed_occupant_load": space_by_guid[guid].get("occupant_load"),
         "occupants_not_placed": n,
-        "why": _why_unplaced(space_by_guid[guid], multipliers),
+        "why": why_unplaced(space_by_guid[guid], multipliers),
     } for guid, n in sorted(unplaced_counts.items())]
 
     return {

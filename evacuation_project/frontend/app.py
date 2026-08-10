@@ -126,13 +126,11 @@ if gate is None:
     st.subheader("How it works")
     c1, c2, c3, c4 = st.columns(4)
     c1.info("**1. Parse-**\nExtract spaces, doors, stairs, exits, centroids and storeys from the IFC.")
-    c2.info("**2. Regulation gate-**\nThe building is checked against your selected regulation and shown "
-            "a clear PASS/FAIL. Generation is blocked unless it passes.")
-    c3.info("**3. Classifier (AI)-**\nA dictionary resolves clear room labels and the LLM handles the "
-            "messy, multilingual ones.")
-    c4.info("**4. Compute, then generate (AI)-**\nOccupant loads and travel distances are computed from "
-            "the geometry. One grounded AI call then decides the scenario set (which exits open/closed) "
-            "and writes routes, bottlenecks, risks and a narrative from those numbers.")
+    c2.info("**2. Regulation gate-**\nThe building is checked against the selected regulation and shown "
+            "a clear PASS/FAIL. Generation of scenarios is blocked unless it passes.")
+    c3.info("**3. Generate scenarios-**\n This generates the possible evacuation scenarios based on the ifc building file.")
+    c4.info("**4. Scenario Results exported in JSON-**\n The generated scenario are finally shown in JSON so that those results "
+            "can be used to later take evacuation scenario decision for any residential buildings.")
     st.stop()
 
 render_gate(gate, jurisdiction_label)

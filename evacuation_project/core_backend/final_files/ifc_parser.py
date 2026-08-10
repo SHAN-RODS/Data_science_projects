@@ -58,7 +58,7 @@ def load_project_name(model):
     return "No IFC project name found."
 
 #this will project the space solid's triangles or nothing will be done. This will be used by the travel distance to find the room's remote point.
-def _footprint_polygon(verts, faces): 
+def footprint_polygon(verts, faces): 
     try:
         from shapely.geometry import Polygon
         from shapely.ops import unary_union
@@ -100,7 +100,7 @@ def space_geometry(space, settings):
         area = shape_util.get_footprint_area(g)
     except Exception:
         area = None
-    footprint = _footprint_polygon(verts, g.faces)
+    footprint = footprint_polygon(verts, g.faces)
     return centroid, area, footprint
 
 

@@ -75,4 +75,18 @@ changed ifc_elements from _ifc_elements in export_results.py
 changed exit_token from _exit_token_re in exit_names.py
 changed plan_order from _plan_order in exit_names.py
 changed conditions_ids from _conditions in exit_names.py 
-changed caption in app.py 
+changed caption in app.py
+changed how it works section in app.py
+changed scenario_weights from _scenario_weights in occupant_placement.py
+changed profile_sequence from _profile_sequence in occupant_placement.py
+changed _why_unplaced from _why_unplaced in occupant_placement.py
+changed rigid_2d from rigid in ifc_parser.py
+changed apply_xy from _apply_xy in ifc_parser.py
+changed invert from _invert_2d in ifc_parser.py
+changed affine_matrix from _affine_matrix in ifc_parser.py
+changed medain from _median in ifc_parser.py
+changed frame_gaps from _frame_gaps in ifc_parser.py
+changed frame_agreemenr from _frame_agreement in ifc_parser.py
+changed sweep_rotation from _sweep_rotation in ifc_parser.py
+changed trimmed_icp from _trimmed_icp in ifc_parser.py
+changed footprint_polygon from _footprint_polygon in ifc_parser.py

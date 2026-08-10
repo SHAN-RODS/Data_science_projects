@@ -60,7 +60,7 @@ def load_project_name(model):
     return "No IFC project name found."
 
 #this will project the space solid's triangles or nothing will be done. This will be used by the travel distance to find the room's remote point.
-def _footprint_polygon(verts, faces): 
+def footprint_polygon(verts, faces): 
     try:
         from shapely.geometry import Polygon
         from shapely.ops import unary_union
@@ -101,7 +101,7 @@ def space_geometry(space, settings):
         area = shape_util.get_footprint_area(g)
     except Exception:
         area = None
-    footprint = _footprint_polygon(verts, g.faces)
+    footprint = footprint_polygon(verts, g.faces)
     return centroid, area, footprint
 
 
@@ -477,7 +477,7 @@ FRAME_ICP_SHIFT_M = 1e-4
 FRAME_ICP_ANGLE_RAD = 1e-5
 
 
-def _rigid_2d(pairs):
+def rigid(pairs):
     if not pairs:
         return None
     n = len(pairs)
@@ -497,23 +497,19 @@ def _rigid_2d(pairs):
     c, s = math.cos(theta), math.sin(theta)
     return (c, s, tx - (c * sx - s * sy), ty - (s * sx + c * sy))
 
-
-def _apply_xy(transform, x, y):
+def apply_xy(transform, x, y):
     c, s, dx, dy = transform
     return (c * x - s * y + dx, s * x + c * y + dy)
 
-
-def _invert_2d(transform):
+def invert(transform):
     c, s, dx, dy = transform
     return (c, -s, -(c * dx + s * dy), -(-s * dx + c * dy))
 
-
-def _affine_matrix(transform):
+def affine_matrix(transform):
     c, s, dx, dy = transform
     return [c, -s, s, c, dx, dy]
 
-
-def _median(values):
+def median(values):
     if not values:
         return None
     ordered = sorted(values)
@@ -521,23 +517,21 @@ def _median(values):
     return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
-def _frame_gaps(entries, transform=None):
+def frame_gaps(entries, transform=None):
     from shapely.geometry import Point
 
-    inverse = _invert_2d(transform) if transform is not None else None
+    inverse = invert(transform) if transform is not None else None
     gaps = []
     for polygon, (dx, dy) in entries:
-        x, y = (dx, dy) if inverse is None else _apply_xy(inverse, dx, dy)
+        x, y = (dx, dy) if inverse is None else apply_xy(inverse, dx, dy)
         gaps.append(polygon.distance(Point(x, y)))
     return gaps
 
+def frame_agreement(entries, transform=None):
+    gaps = frame_gaps(entries, transform)
+    return sum(1 for g in gaps if g <= FRAME_INLIER_M), median(gaps)
 
-def _frame_agreement(entries, transform=None):
-    gaps = _frame_gaps(entries, transform)
-    return sum(1 for g in gaps if g <= FRAME_INLIER_M), _median(gaps)
-
-
-def _sweep_rotation(entries):
+def sweep_rotation(entries):
     centroids = [(p.centroid.x, p.centroid.y) for p, _ in entries]
     targets = [d for _, d in entries]
     best = None
@@ -545,33 +539,33 @@ def _sweep_rotation(entries):
     for step in range(steps):
         theta = math.radians(step * FRAME_SWEEP_DEG)
         c, s = math.cos(theta), math.sin(theta)
-        dx = _median([t[0] - (c * cx - s * cy) for (cx, cy), t in zip(centroids, targets)])
-        dy = _median([t[1] - (s * cx + c * cy) for (cx, cy), t in zip(centroids, targets)])
+        dx = median([t[0] - (c * cx - s * cy) for (cx, cy), t in zip(centroids, targets)])
+        dy = median([t[1] - (s * cx + c * cy) for (cx, cy), t in zip(centroids, targets)])
         transform = (c, s, dx, dy)
-        score = _frame_agreement(entries, transform)
+        score = frame_agreement(entries, transform)
         if best is None or (score[0], -score[1]) > (best[1][0], -best[1][1]):
             best = (transform, score)
     return best[0] if best else None
 
 
-def _trimmed_icp(entries, transform):
+def trimmed_icp(entries, transform):
     from shapely.geometry import Point
     from shapely.ops import nearest_points
 
     steps = 0
     for steps in range(1, FRAME_ICP_MAX_STEPS + 1):
-        gaps = _frame_gaps(entries, transform)
+        gaps = frame_gaps(entries, transform)
         keep = [i for i, g in enumerate(gaps) if g <= FRAME_TRIM_M]
         if len(keep) < FRAME_MIN_PAIRS:
             keep = sorted(range(len(gaps)), key=lambda i: gaps[i])[:FRAME_MIN_PAIRS]
-        inverse = _invert_2d(transform)
+        inverse = invert(transform)
         refined = []
         for i in keep:
             polygon, door_xy = entries[i]
-            bx, by = _apply_xy(inverse, door_xy[0], door_xy[1])
+            bx, by = apply_xy(inverse, door_xy[0], door_xy[1])
             on_outline = nearest_points(polygon.boundary, Point(bx, by))[0]
             refined.append(((on_outline.x, on_outline.y), door_xy))
-        stepped = _rigid_2d(refined)
+        stepped = rigid(refined)
         if stepped is None:
             break
         shift = math.hypot(stepped[2] - transform[2], stepped[3] - transform[3])
@@ -625,7 +619,7 @@ def reconcile_space_frame(spaces, doors, links, storeys):
         if len(entries) < FRAME_MIN_PAIRS:
             row["note"] = "too few door-to-room correspondences to fit a frame"
             continue
-        inliers, median_before = _frame_agreement(entries)
+        inliers, median_before = frame_agreement(entries)
         row["median_gap_before_m"] = round(median_before, 3)
         row["doors_on_their_room_before"] = inliers
         if median_before <= FRAME_OK_M:
@@ -635,14 +629,14 @@ def reconcile_space_frame(spaces, doors, links, storeys):
 
     candidates = []
     for storey_id in needs:
-        seed = _sweep_rotation(entries_by_storey[storey_id])
+        seed = sweep_rotation(entries_by_storey[storey_id])
         if seed is not None:
-            candidates.append(_trimmed_icp(entries_by_storey[storey_id], seed)[0])
+            candidates.append(trimmed_icp(entries_by_storey[storey_id], seed)[0])
     if len(needs) > 1:
         pooled = [e for storey_id in needs for e in entries_by_storey[storey_id]]
-        seed = _sweep_rotation(pooled)
+        seed = sweep_rotation(pooled)
         if seed is not None:
-            candidates.append(_trimmed_icp(pooled, seed)[0])
+            candidates.append(trimmed_icp(pooled, seed)[0])
 
     for storey_id in needs:
         entries, row = entries_by_storey[storey_id], rows[storey_id]
@@ -651,8 +645,8 @@ def reconcile_space_frame(spaces, doors, links, storeys):
             row["note"] = "correspondences are degenerate; no transform fitted"
             continue
         transform = max(candidates, key=lambda t: (lambda a: (a[0], -a[1]))(
-            _frame_agreement(entries, t)))
-        inliers_after, median_after = _frame_agreement(entries, transform)
+            frame_agreement(entries, t)))
+        inliers_after, median_after = frame_agreement(entries, transform)
         row["median_gap_after_m"] = round(median_after, 3)
         row["doors_on_their_room_after"] = inliers_after
 
@@ -665,13 +659,13 @@ def reconcile_space_frame(spaces, doors, links, storeys):
                            f"{len(entries)}); storey left as parsed")
             continue
 
-        matrix = _affine_matrix(transform)
+        matrix = affine_matrix(transform)
         for space in by_storey[storey_id]:
             if space.get("footprint") is not None:
                 space["footprint"] = affine_transform(space["footprint"], matrix)
             centroid = space.get("centroid")
             if centroid is not None:
-                x, y = _apply_xy(transform, centroid[0], centroid[1])
+                x, y = apply_xy(transform, centroid[0], centroid[1])
                 space["centroid"] = (x, y, centroid[2])
 
         c, s, dx, dy = transform
@@ -687,9 +681,7 @@ def reconcile_space_frame(spaces, doors, links, storeys):
 
     return list(rows.values())
 
-
 OVERLAY_COVERED_SHARE = 0.9   
-
 
 def _is_overlay_of_a_connected_room(space, connected):
     area = space["footprint"].area
@@ -739,7 +731,6 @@ def augment_door_space_links(links, spaces, doors, levels, tolerance_m=0.3):
                     bounded.append(space["id"])
                     added += 1
     return {door_id: sorted(bounded) for door_id, bounded in augmented.items() if bounded}, added
-
 
 def parser_summary(ifc_path):
     model = ifcopenshell.open(ifc_path)
