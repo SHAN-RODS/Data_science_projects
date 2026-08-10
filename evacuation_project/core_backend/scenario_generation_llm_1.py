@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, ValidationError
 from core_backend.llm import select_llm
 from core_backend.egress import build_graph, ground_spaces, discount_exit, stair_adjacency
 from core_backend.exit_names import exit_names, name_exit_ids, named, resolve_exit_ids
-from core_backend.occupancy import JURISDICTION_SOURCE
+from core_backend.occupancy import jurisdiction_source
 from core_backend.ifc_parser import parser_summary
 from core_backend.occupant_placement import attach_occupancy
 from core_backend.space_classifier import classify_spaces
@@ -496,7 +496,7 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
             "generated_by_model": model_label,
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "occupancy_factor_source": (f"code occupancy load factors — "
-                                        f"{JURISDICTION_SOURCE.get(jurisdiction, JURISDICTION_SOURCE['england'])}"
+                                        f"{jurisdiction_source.get(jurisdiction, jurisdiction_source['england'])}"
                                         f"; dwellings: NDSS bedspaces (habitable rooms + 1)"),
             "distance_method": DISTANCE_METHOD,
             "llm_grounded": True,

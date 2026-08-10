@@ -1,4 +1,27 @@
 changed storey_match_tol_m from _STOREY_MATCH_TOL_M in scenario_generation_llm_1.py
 
+#batch-1 
+space classifier no changes made
+changed occupancy_load_factors from OCCUPANCY_LOAD_FACTORS in occupancy.py
+changed jurisdiction_source from JURISDICTION_SOURCE in occupancy.py and scenario_generation_llm_1.py and scenario_generation_1.py
 
+results- checked output and it is working no issues
 
+#batch-2 
+changed non_occupable from NON_OCCUPABLE in occupancy.py 
+changes apartment_room_types from APARTMENT_ROOM_TYPES in occupancy.py 
+changed room_count from _ROOM_COUNT_RE in occupancy.py
+changed dwelling_occupants from _dwelling_occupants in occupancy.py
+removed line 72 comment-# no parseable room count -> fall through to a floor-space factor if one exists
+changed body_clearance_m from BODY_CLEARANCE_M from travel_distance.py 
+changed portal_radius_min_m from PORTAL_RADIUS_MIN_M from travel_distance 
+changed ground_tol_m from GROUND_TOL_M in travel_distance.py 
+changed default_pitch_k from DEFAULT_PITCH_K in travel_distance.py 
+changed non_walkable from NON_WALKABLE in travel distance.py
+changed bridge_tol_m from BRIDGE_TOL_M in travel_distance.py
+changed pitch_factor from _pitch_factor in travel_distance.py
+
+#results- no issues in the output
+
+#batch-3 
+changed inset from _inset in travel_distance.py 

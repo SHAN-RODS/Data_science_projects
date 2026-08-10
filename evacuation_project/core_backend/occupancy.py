@@ -3,7 +3,7 @@
 import math
 import re
 
-OCCUPANCY_LOAD_FACTORS = {
+occupancy_load_factors = {
     "commercial":       (6.0,  "office"),
     "communal_amenity": (1.0,  "common/assembly room"),
     "dining":           (1.0,  "dining room / restaurant"),
@@ -16,26 +16,25 @@ OCCUPANCY_LOAD_FACTORS = {
     "sauna":            (4.0,  "project default — no named code category"),
 }
 
-JURISDICTION_SOURCE = {
+jurisdiction_source = {
     "england":          "Approved Document B, Table C1 (floor space factors)",
     "wales":            "Approved Document B, Table C1 (floor space factors)",
     "scotland":         "Building Standards Technical Handbook (Non-domestic), Table 2.10 (occupancy load factors)",
     "northern_ireland": "Technical Booklet E (occupancy load factors)",
 }
 
-NON_OCCUPIABLE = {"circulation", "stair", "plant", "sanitary", "measurement_zone"}
+non_occupable = {"circulation", "stair", "plant", "sanitary", "measurement_zone"}
 
-APARTMENT_ROOM_TYPES = {"bedroom", "living", "kitchen", "kitchen_living", "dining", "sauna"}
+apartment_room_types = {"bedroom", "living", "kitchen", "kitchen_living", "dining", "sauna"}
 
 def _source(jurisdiction):
-    return JURISDICTION_SOURCE.get((jurisdiction or "england").lower(),
-                                   JURISDICTION_SOURCE["england"])
+    return jurisdiction_source.get((jurisdiction or "england").lower(),
+                                   jurisdiction_source["england"])
 
-_ROOM_COUNT_RE = re.compile(r"(\d+)\s*h\b")
+room_count = re.compile(r"(\d+)\s*h\b")
 
-
-def _dwelling_occupants(long_name):
-    match = _ROOM_COUNT_RE.search((long_name or "").lower())
+def dwelling_occupants(long_name):
+    match = room_count.search((long_name or "").lower())
     if match:
         rooms = int(match.group(1))
         occupants = rooms + 1
@@ -45,16 +44,15 @@ def _dwelling_occupants(long_name):
         )
     return None, None
 
-
 def occupant_load(space, use_type, on_dwelling_storey=False, jurisdiction="england"):
     area = space.get("area")
     source = _source(jurisdiction)
 
-    if use_type in NON_OCCUPIABLE:
+    if use_type in non_occupable:
         return {"occupant_load": 0, "occupant_basis": f"non-occupiable ({use_type}); excluded from "
                 f"occupancy per {source}", "factor_source": None, "not_assessed": None}
 
-    if on_dwelling_storey and use_type in APARTMENT_ROOM_TYPES:
+    if on_dwelling_storey and use_type in apartment_room_types:
         return {"occupant_load": 0,
                 "occupant_basis": f"{use_type} within an apartment — occupants counted at the "
                                   f"dwelling-unit level for this storey (not re-counted)",
@@ -65,13 +63,12 @@ def occupant_load(space, use_type, on_dwelling_storey=False, jurisdiction="engla
                 "not_assessed": "use_type unresolved; occupant load not estimated"}
 
     if use_type == "dwelling":
-        occupants, basis = _dwelling_occupants(space.get("long_name"))
+        occupants, basis = dwelling_occupants(space.get("long_name"))
         if occupants is not None:
             return {"occupant_load": occupants, "occupant_basis": basis,
                     "factor_source": "dwelling design occupancy (NDSS bedspaces)", "not_assessed": None}
-        # no parseable room count -> fall through to a floor-space factor if one exists
 
-    entry = OCCUPANCY_LOAD_FACTORS.get(use_type)
+    entry = occupancy_load_factors.get(use_type)
     if entry is None:
         return {"occupant_load": None, "occupant_basis": None, "factor_source": None,
                 "not_assessed": f"no occupancy load factor defined for use_type '{use_type}'"}

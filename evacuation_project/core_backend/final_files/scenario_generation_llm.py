@@ -18,7 +18,7 @@ from core_backend.uk_regulation_checking import regulation_gate, load_regs
 from core_backend.sample_paths import resolve_ifc
 
 # Jurisdiction -> the document whose occupancy load factors guide the AI's occupancy estimates.
-JURISDICTION_SOURCE = {
+jurisdiction_source = {
     "england":          "Approved Document B, Table C1 (floor space factors)",
     "wales":            "Approved Document B, Table C1 (floor space factors)",
     "scotland":         "Building Standards Technical Handbook (Non-domestic), Table 2.10 (occupancy load factors)",
@@ -317,7 +317,7 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
             "generated_by_model": model_label,
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "occupancy_factor_source": (f"LLM-estimated from geometry, guided by code occupancy load "
-                                        f"factors — {JURISDICTION_SOURCE.get(jurisdiction, JURISDICTION_SOURCE['england'])}"),
+                                        f"factors — {jurisdiction_source.get(jurisdiction, jurisdiction_source['england'])}"),
             "distance_method": DISTANCE_METHOD,
             "llm_grounded": True,
             "llm_temperature": os.getenv("ANTHROPIC_TEMPERATURE", "0"),

@@ -9,28 +9,28 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
 CELL_M = 0.1                 
-BODY_CLEARANCE_M = 0.15      
-PORTAL_RADIUS_MIN_M = 0.3    
-GROUND_TOL_M = 0.5           
-DEFAULT_PITCH_K = 2.0        
-NON_WALKABLE = {"measurement_zone", "plant"}   
+body_clearance_m = 0.15      
+portal_radium_min_m = 0.3    
+ground_tol_m = 0.5           
+default_pitch_k = 2.0        
+non_walkable = {"measurement_zone", "plant"}   
 
 
-BRIDGE_TOL_M = 0.6
+bridge_tol_m = 0.6
 
 METHOD = "geodesic_grid"
 
 
-def _pitch_factor(summary):
+def pitch_factor(summary):
     flights = [f for f in summary.get("stair_flights", []) if f.get("slope_m") and f.get("rise_m")]
     total_rise = sum(f["rise_m"] for f in flights)
     if total_rise <= 0:
-        return DEFAULT_PITCH_K
+        return default_pitch_k
     return sum(f["slope_m"] for f in flights) / total_rise
 
 
 def _inset(poly):
-    for margin in (BODY_CLEARANCE_M, 0.05):
+    for margin in (body_clearance_m, 0.05):
         p = poly.buffer(-margin)
         if not p.is_empty and p.area > 0:
             return p
@@ -124,17 +124,17 @@ class _Field:
 
 
 def _door_portal(x, y, width_m):
-    r = max((width_m or 0) / 2.0, PORTAL_RADIUS_MIN_M)
+    r = max((width_m or 0) / 2.0, portal_radium_min_m)
     return shapely.Point(x, y).buffer(r)
 
 
 def _connector(portal, x, y, inset, width_m, obstacles):
-    if portal.intersects(inset) or inset.distance(portal) > BRIDGE_TOL_M:
+    if portal.intersects(inset) or inset.distance(portal) > bridge_tol_m:
         return None
     spine = shapely.shortest_line(shapely.Point(x, y), inset)
     if any(spine.intersects(other) for other in obstacles):
         return None
-    return spine.buffer(max((width_m or 0) / 2.0, PORTAL_RADIUS_MIN_M))
+    return spine.buffer(max((width_m or 0) / 2.0, portal_radium_min_m))
 
 
 def compute_travel_distances(summary, classified, final_exits, discounted=frozenset(), report=None):
@@ -147,14 +147,14 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
     space_by_id = {s["id"]: s for s in summary["spaces"]}
 
     height = {st["id"]: st["height_above_ground_m"] for st in summary.get("storeys", [])}
-    pitch_k = _pitch_factor(summary)
+    pitch_k = pitch_factor(summary)
 
     def storey_id(s):
         return (s.get("storey") or {}).get("id")
 
     by_storey = {}
     for s in spaces:
-        if use_by_id.get(s["id"]) in NON_WALKABLE:
+        if use_by_id.get(s["id"]) in non_walkable:
             continue
         by_storey.setdefault(storey_id(s), []).append(s)
 
@@ -195,7 +195,7 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
                 door_stair_side.setdefault(st, []).append((portal, space_by_id[stair_sid]))
 
     def is_ground(sid):
-        return sid in height and abs(height[sid]) <= GROUND_TOL_M
+        return sid in height and abs(height[sid]) <= ground_tol_m
 
     ground_ids = [sid for sid in by_storey if is_ground(sid)]
     ground_field = None
