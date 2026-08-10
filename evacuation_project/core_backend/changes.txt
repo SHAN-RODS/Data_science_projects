@@ -25,3 +25,45 @@ changed pitch_factor from _pitch_factor in travel_distance.py
 
 #batch-3 
 changed inset from _inset in travel_distance.py 
+changed door_portal from _door_portal in travel_distance.py
+changed connector from _connector in travel_distance.py
+changed ground_tolerance_m from GROUND_TOLERANCE_M in egress.py
+changed stair_max_dz_m from STAIR_MAX_DZ_M in egress.py 
+changed stair_max_dxy_m from STAIR_MAX_DXY_M in egress.py
+changed horizontal from _horizontal in egress.py
+changed accepts_temperature from _accepts_temperature in llm.py
+removed export caption from app.py since not required
+changed _init_ from __init__ in travel_distance.py 
+changed nearest_storey_height from _nearest_storey_height in egress.py 
+changed node_key from _node_key in egress.py 
+changed bfs_prev from _bfc_prev in egress.py
+changed reconstruct from _reconstruct in egress.py
+changed path_distance from _path_distance in egree.py
+
+results- no issues
+
+#batch-4 
+changed llm from --llm in egress.py
+changed TASK from _TASK in scenario_generation_llm_1.py 
+changed resolve_exits from _resolve_exits in scenario_generation_llm_1.py
+changed reg_refs from _reg_refs in scenario_generation_llm_1.py
+changed storey_rollup from _storey_rollup in scenario_generation_llm_1.py
+changed degraded_cases from _degraded_cases in scenario_generation_llm_1.py
+changed facts_block from _facts_block in scenario_generation_llm_1.py
+changed building_block from _building_block in scenario_generation_llm_1.py 
+changed spaces_block from _spaces_block in scenario_generation_llm_1.py 
+changed exits_block from _exits_block in scenario_generation_llm_1.py
+changed circulation_block from _circulation_block in scenario_generation_llm_1.py
+changed stair_links_block from _stair_links_block in scenario_generation_llm_1.py
+changed doors_block from _doors_block in scenario_generation_llm_1.py
+changed elevators_block from _elevators_block in scenario_generation_llm_1.py
+changed model_block from _model_block in scenario_generation_llm_1.py
+changed assemble_scenario from _assemble_scenario in scenario_generation_llm_1.py
+changed invoke_structured from _invoke_structured in scenario_generation_llm_1.py 
+changed AREA_UNITS from _AREA_UNITS in scenario_generation_llm_1.py 
+changed rule_kind from _rule_kind in scenario_generation_llm_1.py 
+changed missing from missing in uk_regulation_checking.py 
+changed slim_flag from slim_flag in uk_regulation_checking.py
+changed NUM_RE from _NUM_RE in validation.py
+changed allowed_floats from _allowed_floats in validation.py 
+changed is_grounded from _is_grounded in validation.py

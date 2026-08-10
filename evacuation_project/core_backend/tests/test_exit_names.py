@@ -9,8 +9,8 @@ from core_backend.exit_names import (available_exit_ids, discounted_exit_ids, ex
                                      name_exit_ids, named, resolve_exit_ids,
                                      unknown_exit_references)
 from core_backend.export_results import build_records
-from core_backend.scenario_generation_llm import (ScenarioContent, _assemble_scenario, _exits_block,
-                                                  _facts_block, _spaces_block)
+from core_backend.scenario_generation_llm import (ScenarioContent, assemble_scenario, exits_block,
+                                                  facts_block, spaces_block)
 
 
 def _exits():
@@ -96,7 +96,7 @@ def test_the_model_is_never_shown_an_exit_globalid():
     """The surest way to keep a GUID out of the AI's prose is to keep it out of the AI's facts."""
     exits = _exits()
     names = exit_names(exits)
-    facts = _facts_block(
+    facts = facts_block(
         {"project": "T", "storeys": 1, "total_floor_area_m2": 60.0, "total_occupant_load": 4},
         _grounded(), exits, [], [{"name": "Ground", "elevation_m": 0.0,
                                   "height_above_ground_m": 0.0}], [],
@@ -112,12 +112,12 @@ def test_the_model_is_never_shown_an_exit_globalid():
 
 def test_the_object_carries_both_the_name_and_the_id():
     names = exit_names(_exits())
-    exits_block = _exits_block(_exits(), names)
+    exits_block = exits_block(_exits(), names)
     assert [e["exit_name"] for e in exits_block] == ["Exit 1", "Exit 2", "Exit 3"]
     # the IFC's own label is kept so the door is still findable in the model
     assert exits_block[0]["name"] == "O-1:O-1.10x21:1429543"
 
-    space = _spaces_block(_grounded(), [], names)[0]
+    space = spaces_block(_grounded(), [], names)[0]
     assert space["nearest_exit_name"] == "Exit 1"
     assert space["nearest_exit"] == "0vwVLBnBr9meBshDw$RHGp"
 
@@ -142,7 +142,7 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
                     "occupancy_multipliers": []},
         regulatory_justification="ENG-R11", ai_explanation="tests the loss of Exit 3")
 
-    scn = _assemble_scenario(content, 1, names)
+    scn = assemble_scenario(content, 1, names)
 
     assert scn["conditions"]["exits_discounted"] == ["Exit 3"]
     assert scn["conditions"]["exits_discounted_ifc_ids"] == ["3uMBEvBYD33AT9ygIhdZHw"]
@@ -159,9 +159,9 @@ def _obj_named():
     names = exit_names(exits)
     return {
         "building": {"total_occupant_load": 4},
-        "exits": _exits_block(exits, names),
+        "exits": exits_block(exits, names),
         "doors": [], "circulation": [], "elevators": [],
-        "spaces": _spaces_block(_grounded(), [], names),
+        "spaces": spaces_block(_grounded(), [], names),
         "not_assessed": [],
         "scenarios": [
             {"id": "SCN-001", "type": "one_exit_discounted", "title": "Exit 3 unavailable",

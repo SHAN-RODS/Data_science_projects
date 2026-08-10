@@ -177,14 +177,14 @@ _SYSTEM = (
     "If some spaces could not be assessed, treat them as an open risk, never as safe."
 )
 
-_TASK = "Produce the BuildingAnalysis: your chosen scenarios, written from the computed facts."
+TASK = "Produce the BuildingAnalysis: your chosen scenarios, written from the computed facts."
 
 
 # ---------------------------------------------------------------------------------------------------
 # Grounding: the computed egress results are the facts the model reasons over.
 # UNCHANGED from the original file — none of this needed to move for the schema change.
 # ---------------------------------------------------------------------------------------------------
-def _resolve_exits(summary, classified, grounded):
+def resolve_exits(summary, classified, grounded):
     """The computed ground-level final exits; falls back to all emergency exits if none sit at grade."""
     exits = list(grounded["final_exits"])
     if exits:
@@ -196,7 +196,7 @@ def _resolve_exits(summary, classified, grounded):
              "position": d.get("position")} for d in summary.get("emergency_exits", [])]
 
 
-def _reg_refs(jurisdiction):
+def reg_refs(jurisdiction):
     """Compact list of the jurisdiction's rules, to ground each scenario's regulatory_justification."""
     try:
         regs = load_regs(jurisdiction)
@@ -206,7 +206,7 @@ def _reg_refs(jurisdiction):
              "reference": r.get("doc_reference")} for r in regs.values()]
 
 
-def _storey_rollup(grounded):
+def storey_rollup(grounded):
     """Per-storey occupants / space count / longest computed travel distance / unreachable count."""
     rollup = {}
     for s in grounded["spaces"]:
@@ -222,7 +222,7 @@ def _storey_rollup(grounded):
     return rollup
 
 
-def _degraded_cases(summary, classified, grounded, jurisdiction, limit=DISCOUNT_VARIANTS):
+def degraded_cases(summary, classified, grounded, jurisdiction, limit=DISCOUNT_VARIANTS):
     """Recompute egress with each of the busiest exits unavailable, so the AI's degraded scenarios have
     real numbers to cite.
 
@@ -242,13 +242,13 @@ def _degraded_cases(summary, classified, grounded, jurisdiction, limit=DISCOUNT_
                 {"storey": storey, "occupants": row["occupants"],
                  "max_travel_distance_m": round(row["max_dist"], 1),
                  "unreachable": row["unreachable"]}
-                for storey, row in _storey_rollup(variant).items()
+                for storey, row in storey_rollup(variant).items()
             ],
         })
     return cases
 
 
-def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded):
+def facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded):
     spaces = grounded["spaces"]
     lines = [
         f"Building: {building['project']} | storeys: {building['storeys']} | "
@@ -272,7 +272,7 @@ def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
 
     lines += ["", "BASE-CASE per-storey rollup (computed — occupants / spaces / longest travel "
                   "distance m / unreachable):"]
-    for storey, row in _storey_rollup(grounded).items():
+    for storey, row in storey_rollup(grounded).items():
         lines.append(f"  - {storey}: occupants={row['occupants']} spaces={row['spaces']} "
                      f"max_travel_m={round(row['max_dist'], 1)} unreachable={row['unreachable']}")
 
@@ -319,7 +319,7 @@ def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
 # Deterministic assembly of the whole-building object around the AI-chosen scenarios.
 # UNCHANGED from the original file — these build `building`/`exits`/`doors`/etc, not the scenario shape.
 # ---------------------------------------------------------------------------------------------------
-def _building_block(summary, grounded, jurisdiction):
+def building_block(summary, grounded, jurisdiction):
     total_area = round(sum(s["area_m2"] for s in grounded["spaces"] if s["area_m2"]), 1)
     total_occ = sum(s["occupant_load"] for s in grounded["spaces"] if s["occupant_load"])
     return {
@@ -333,7 +333,7 @@ def _building_block(summary, grounded, jurisdiction):
     }
 
 
-def _spaces_block(grounded, classified):
+def spaces_block(grounded, classified):
     conf = {c["guid"]: c for c in classified}
     out = []
     for s in grounded["spaces"]:
@@ -365,7 +365,7 @@ def _point(p):
     return [_round(v, 2) for v in p] if p else None
 
 
-def _exits_block(exits):
+def exits_block(exits):
     return [{"id": e["id"], "name": e.get("name"), "type": "final_exit",
              "width_m": _round(e.get("width_m"), 2), "position": _point(e.get("position"))}
             for e in exits]
@@ -375,7 +375,7 @@ def _exits_block(exits):
 storey_match_tol_m = 1.0
 
 
-def _circulation_block(summary):
+def circulation_block(summary):
     """The IfcStair elements, enriched with the flight geometry and storey span an egress simulator
     needs to rebuild the vertical connections (all of it already parsed, none of it exported before)."""
     flights = {f["id"]: f for f in summary.get("stair_flights", [])}
@@ -407,7 +407,7 @@ def _circulation_block(summary):
     return out
 
 
-def _stair_links_block(summary, classified):
+def stair_links_block(summary, classified):
     """Stair spaces the egress graph joins vertically — the connectivity travel_distance actually
     walked, so a simulator's own vertical links can be checked against it."""
     use_type = {c["guid"]: c["use_type"] for c in classified}
@@ -416,7 +416,7 @@ def _stair_links_block(summary, classified):
             for a, b in stair_adjacency(summary["spaces"], use_type)]
 
 
-def _doors_block(summary, exits):
+def doors_block(summary, exits):
     """Internal doors — the room-to-room connections. Final exits are excluded (they are in `exits`)."""
     final = {e["id"] for e in exits}
     links = summary.get("door_space_links", {})
@@ -426,13 +426,13 @@ def _doors_block(summary, exits):
             for d in summary.get("doors", []) if d["id"] not in final]
 
 
-def _elevators_block(summary):
+def elevators_block(summary):
     return [{"id": t["id"], "name": t.get("name"), "type": "elevator",
              "is_evac_lift": t.get("is_evac_lift"), "position": _point(t.get("position"))}
             for t in summary.get("elevators", [])]
 
 
-def _model_block(summary):
+def model_block(summary):
     """How to line this object up with the geometry an egress simulator imports from the same IFC."""
     return {
         "source_ifc": summary.get("source_ifc"),
@@ -445,7 +445,7 @@ def _model_block(summary):
     }
 
 
-def _assemble_scenario(sc):
+def assemble_scenario(sc):
     """CHANGED: now returns the SCN-001 shape (scenario_id / description / relevant_ifc_elements /
     regulatory_justification / ai_explanation / scenario_inputs) instead of the old
     id/type/title/conditions/routes/bottlenecks/risks/narrative/simulation shape."""
@@ -462,7 +462,7 @@ def _assemble_scenario(sc):
 GENERATION_ATTEMPTS = int(os.getenv("EVAC_GEN_ATTEMPTS", "3"))
 
 
-def _invoke_structured(llm, prompt, attempts=None):
+def invoke_structured(llm, prompt, attempts=None):
     """The generation call, retried with the schema's own rejection handed back to the model.
 
     The scenario call is the expensive one — 16k tokens and up to a 600 s read — and it is a single
@@ -500,7 +500,7 @@ def _invoke_structured(llm, prompt, attempts=None):
 def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, model_label=None):
     """Assemble the whole-building scenario object: computed egress + ONE grounded LLM call for the
     scenario set + the regulation gate. UNCHANGED except that `analysis.scenarios` now come back in the
-    new SCN-001 shape via the updated `_assemble_scenario`."""
+    new SCN-001 shape via the updated `assemble_scenario`."""
     if llm is None:
         # the generation call is the big one — give it a long read timeout (override EVAC_GEN_TIMEOUT)
         llm, model_label = select_llm(max_tokens=16384,
@@ -508,19 +508,19 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
 
     # ---- computed, deterministic: occupancy + travel distance + reachability --------------------
     grounded = ground_spaces(summary, classified, jurisdiction=jurisdiction)
-    exits = _resolve_exits(summary, classified, grounded)
+    exits = resolve_exits(summary, classified, grounded)
     stairs = summary.get("stairs", [])
     storeys = summary.get("storeys", [])
 
-    building = _building_block(summary, grounded, jurisdiction)
-    degraded = _degraded_cases(summary, classified, grounded, jurisdiction)
+    building = building_block(summary, grounded, jurisdiction)
+    degraded = degraded_cases(summary, classified, grounded, jurisdiction)
 
     # ---- the single API call: which scenarios are worth generating, and their write-up ----------
-    reg_refs = _reg_refs(jurisdiction)
-    facts = _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
-    prompt = f"{_SYSTEM}\n\n=== COMPUTED BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{_TASK}"
+    reg_refs = reg_refs(jurisdiction)
+    facts = facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
+    prompt = f"{_SYSTEM}\n\n=== COMPUTED BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{TASK}"
 
-    analysis = _invoke_structured(llm, prompt)
+    analysis = invoke_structured(llm, prompt)
 
     obj = {
         "schema_version": "1.0",
@@ -534,16 +534,16 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
             "llm_grounded": True,
             "llm_temperature": os.getenv("ANTHROPIC_TEMPERATURE", "0"),
         },
-        "model": _model_block(summary),
+        "model": model_block(summary),
         "building": building,
-        "exits": _exits_block(exits),
-        "doors": _doors_block(summary, exits),
-        "circulation": _circulation_block(summary),
-        "stair_links": _stair_links_block(summary, classified),
-        "elevators": _elevators_block(summary),
-        "spaces": _spaces_block(grounded, classified),
+        "exits": exits_block(exits),
+        "doors": doors_block(summary, exits),
+        "circulation": circulation_block(summary),
+        "stair_links": stair_links_block(summary, classified),
+        "elevators": elevators_block(summary),
+        "spaces": spaces_block(grounded, classified),
         "degraded_cases": degraded,
-        "scenarios": [_assemble_scenario(sc) for sc in analysis.scenarios],
+        "scenarios": [assemble_scenario(sc) for sc in analysis.scenarios],
         "regulation_check": gate,
         "validation": {},
         "not_assessed": grounded["not_assessed"],

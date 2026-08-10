@@ -13,7 +13,7 @@ the last test pins that a model which never complies still fails loudly.
 import pytest
 from pydantic import ValidationError
 
-from core_backend.scenario_generation_llm import BuildingAnalysis, _invoke_structured
+from core_backend.scenario_generation_llm import BuildingAnalysis, invoke_structured
 
 
 def _scenario(multiplier):
@@ -39,7 +39,7 @@ def _scenario(multiplier):
 class _FakeLLM:
     """Returns the multiplier at each position of ``sequence``, sticking on the last one."""
 
-    def __init__(self, sequence):
+    def _init_(self, sequence):
         self.sequence = sequence
         self.prompts = []
 
@@ -58,7 +58,7 @@ class _FakeLLM:
 def test_a_valid_reply_is_not_retried():
     llm = _FakeLLM([1.0])
 
-    analysis = _invoke_structured(llm, "PROMPT")
+    analysis = invoke_structured(llm, "PROMPT")
 
     assert len(llm.prompts) == 1
     assert analysis.scenarios[0].simulation.occupancy_multipliers[0].multiplier == 1.0
@@ -67,7 +67,7 @@ def test_a_valid_reply_is_not_retried():
 def test_an_out_of_range_multiplier_is_repaired_rather_than_losing_the_run():
     llm = _FakeLLM([2.0, 1.0])          # rejected, then corrected
 
-    analysis = _invoke_structured(llm, "PROMPT")
+    analysis = invoke_structured(llm, "PROMPT")
 
     assert len(llm.prompts) == 2
     assert analysis.scenarios[0].simulation.occupancy_multipliers[0].multiplier == 1.0
@@ -81,7 +81,7 @@ def test_a_model_that_never_complies_still_fails_and_the_bound_holds():
     llm = _FakeLLM([2.0])
 
     with pytest.raises(ValidationError) as excinfo:
-        _invoke_structured(llm, "PROMPT")
+        invoke_structured(llm, "PROMPT")
 
     assert len(llm.prompts) > 1                       # it did try to repair
     # and the error the user sees names the real offending field
@@ -92,6 +92,6 @@ def test_attempts_are_bounded():
     llm = _FakeLLM([2.0])
 
     with pytest.raises(ValidationError):
-        _invoke_structured(llm, "PROMPT", attempts=2)
+        invoke_structured(llm, "PROMPT", attempts=2)
 
     assert len(llm.prompts) == 2

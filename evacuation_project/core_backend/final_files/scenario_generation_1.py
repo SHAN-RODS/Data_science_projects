@@ -168,7 +168,7 @@ Every number mentioned in the narrative must already exist in the structured fie
 Never invent exits or rooms that do not exist in the IFC.
 )
 
-_TASK = "Produce the BuildingAnalysis: per-space occupancy and distance, plus your chosen scenarios."
+TASK = "Produce the BuildingAnalysis: per-space occupancy and distance, plus your chosen scenarios."
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -194,7 +194,7 @@ def _spaces_for_llm(summary, classified):
     return out
 
 
-def _resolve_exits(summary, classified):
+def resolve_exits(summary, classified):
     """Ground-level final exits (geometry only). Falls back to all emergency exits if none sit at grade."""
     _, _, final_exits = build_graph(summary, classified)
     exits = list(final_exits.values())
@@ -204,7 +204,7 @@ def _resolve_exits(summary, classified):
              "position": d.get("position")} for d in summary.get("emergency_exits", [])]
 
 
-def _reg_refs(jurisdiction):
+def reg_refs(jurisdiction):
     """Compact list of the jurisdiction's rules, to ground each scenario's regulatory_justification."""
     try:
         regs = load_regs(jurisdiction)
@@ -214,7 +214,7 @@ def _reg_refs(jurisdiction):
              "reference": r.get("doc_reference")} for r in regs.values()]
 
 
-def _facts_block(building, spaces, exits, stairs, storeys, reg_refs):
+def facts_block(building, spaces, exits, stairs, storeys, reg_refs):
     lines = [
         f"Building: {building['project']} | storeys: {building['storeys']} | "
         f"total floor area: {building['total_floor_area_m2']} m2 | real spaces: {len(spaces)}",
@@ -254,7 +254,7 @@ def _facts_block(building, spaces, exits, stairs, storeys, reg_refs):
 # ---------------------------------------------------------------------------------------------------
 # Deterministic assembly of the whole-building object around the single LLM analysis.
 # ---------------------------------------------------------------------------------------------------
-def _building_block(summary, spaces_for_llm, jurisdiction):
+def building_block(summary, spaces_for_llm, jurisdiction):
     total_area = round(sum(sp["area_m2"] for sp in spaces_for_llm if sp["area_m2"]), 1)
     return {
         "project": summary["project"],
@@ -267,7 +267,7 @@ def _building_block(summary, spaces_for_llm, jurisdiction):
     }
 
 
-def _spaces_block(spaces_for_llm, classified, analysis_by_guid):
+def spaces_block(spaces_for_llm, classified, analysis_by_guid):
     conf = {c["guid"]: c for c in classified}
     out = []
     for sp in spaces_for_llm:
@@ -291,17 +291,17 @@ def _spaces_block(spaces_for_llm, classified, analysis_by_guid):
     return out
 
 
-def _exits_block(exits):
+def exits_block(exits):
     return [{"id": e["id"], "name": e.get("name"), "type": "final_exit", "width_m": _round(e.get("width_m"), 2)}
             for e in exits]
 
 
-def _circulation_block(stairs):
+def circulation_block(stairs):
     return [{"id": st["id"], "name": st.get("name"), "type": "internal_stair",
              "width_m": _round(st.get("width"), 2)} for st in stairs]
 
 
-def _assemble_scenario(sc):
+def assemble_scenario(sc):
     return {
         "id": sc.id,
         "type": sc.type,
@@ -347,24 +347,24 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
                                       timeout=float(os.getenv("EVAC_GEN_TIMEOUT", "600")))
 
     spaces_for_llm = _spaces_for_llm(summary, classified)
-    exits = _resolve_exits(summary, classified)
+    exits = resolve_exits(summary, classified)
     stairs = summary.get("stairs", [])
     storeys = summary.get("storeys", [])
 
-    building = _building_block(summary, spaces_for_llm, jurisdiction)
+    building = building_block(summary, spaces_for_llm, jurisdiction)
 
-    reg_refs = _reg_refs(jurisdiction)
-    facts = _facts_block(building, spaces_for_llm, exits, stairs, storeys, reg_refs)
-    prompt = f"{_SYSTEM}\n\n=== BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{_TASK}"
+    reg_refs = reg_refs(jurisdiction)
+    facts = facts_block(building, spaces_for_llm, exits, stairs, storeys, reg_refs)
+    prompt = f"{_SYSTEM}\n\n=== BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{TASK}"
 
     # THE single API call: occupancy + distance + AI-chosen scenarios, all at once.
     analysis = llm.with_structured_output(BuildingAnalysis).invoke(prompt)
 
     analysis_by_guid = {a.guid: a for a in analysis.spaces}
-    spaces_block = _spaces_block(spaces_for_llm, classified, analysis_by_guid)
+    spaces_block = spaces_block(spaces_for_llm, classified, analysis_by_guid)
     building["total_occupant_load"] = sum(s["occupant_load"] for s in spaces_block if s["occupant_load"])
 
-    scenarios = [_assemble_scenario(sc) for sc in analysis.scenarios]
+    scenarios = [assemble_scenario(sc) for sc in analysis.scenarios]
 
     return {
         "schema_version": "1.0",
@@ -378,8 +378,8 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
             "llm_temperature": os.getenv("ANTHROPIC_TEMPERATURE", "0"),
         },
         "building": building,
-        "exits": _exits_block(exits),
-        "circulation": _circulation_block(stairs),
+        "exits": exits_block(exits),
+        "circulation": circulation_block(stairs),
         "spaces": spaces_block,
         "scenarios": scenarios,
         "regulation_check": gate,

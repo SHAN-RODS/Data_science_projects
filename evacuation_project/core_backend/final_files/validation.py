@@ -8,10 +8,10 @@ from core_backend.scenario_schema import SCENARIO_SCHEMA
 
 EXIT_CAPACITY_PERSONS_PER_M = 200
 
-_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 
 
-def _allowed_floats(obj):
+def allowed_floats(obj):
     allowed = set()
 
     def add(value):
@@ -49,7 +49,7 @@ def _allowed_floats(obj):
     return allowed
 
 
-def _is_grounded(value, allowed):
+def is_grounded(value, allowed):
     if value <= 12 and value == int(value):
         return True
     for a in allowed:
@@ -75,16 +75,16 @@ def _scenario_text(scn, id_tokens):
 
 def number_factcheck(obj):
     """Return the list of narrative numbers that do not trace to the structured record."""
-    allowed = _allowed_floats(obj)
+    allowed = allowed_floats(obj)
     id_tokens = {e.get("id") for e in obj["exits"]} | {s.get("guid") for s in obj["spaces"]}
     ungrounded = []
     for scn in obj["scenarios"]:
-        for token in _NUM_RE.findall(_scenario_text(scn, id_tokens)):
+        for token in NUM_RE.findall(_scenario_text(scn, id_tokens)):
             try:
                 value = float(token)
             except ValueError:
                 continue
-            if not _is_grounded(value, allowed):
+            if not is_grounded(value, allowed):
                 ungrounded.append({"scenario": scn["id"], "value": token})
     return ungrounded
 

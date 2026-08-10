@@ -1,4 +1,4 @@
-#This is the calcualation of the travel distance since giving this calculation by LLM is not feasible and
+#This is the calculation of the travel distance since giving this calculation by LLM is not feasible and
 #tells about reaching the nearest exit from the corner of each room.
 
 import math
@@ -8,7 +8,8 @@ import shapely
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
-CELL_M = 0.1                 
+CELL_M = 0.1   
+CELL_M = 0.1              
 body_clearance_m = 0.15      
 portal_radium_min_m = 0.3    
 ground_tol_m = 0.5           
@@ -29,7 +30,7 @@ def pitch_factor(summary):
     return sum(f["slope_m"] for f in flights) / total_rise
 
 
-def _inset(poly):
+def inset(poly):
     for margin in (body_clearance_m, 0.05):
         p = poly.buffer(-margin)
         if not p.is_empty and p.area > 0:
@@ -38,7 +39,7 @@ def _inset(poly):
 
 
 class _Field:
-    def __init__(self, walkable, seeds, cell_m=CELL_M):
+    def _init_(self, walkable, seeds, cell_m=CELL_M):
         minx, miny, maxx, maxy = walkable.bounds
         self.minx, self.miny, self.cell = minx, miny, cell_m
         self.nx = int(math.ceil((maxx - minx) / cell_m)) + 1
@@ -123,12 +124,12 @@ class _Field:
         return float(dvals[far]), (float(gx[yy[far], xx[far]]), float(gy[yy[far], xx[far]]))
 
 
-def _door_portal(x, y, width_m):
+def door_portal(x, y, width_m):
     r = max((width_m or 0) / 2.0, portal_radium_min_m)
     return shapely.Point(x, y).buffer(r)
 
 
-def _connector(portal, x, y, inset, width_m, obstacles):
+def connector(portal, x, y, inset, width_m, obstacles):
     if portal.intersects(inset) or inset.distance(portal) > bridge_tol_m:
         return None
     spine = shapely.shortest_line(shapely.Point(x, y), inset)
@@ -158,7 +159,7 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
             continue
         by_storey.setdefault(storey_id(s), []).append(s)
 
-    insets = {s["id"]: _inset(s["footprint"]) for rooms in by_storey.values() for s in rooms}
+    insets = {s["id"]: inset (s["footprint"]) for rooms in by_storey.values() for s in rooms}
     insets_on_storey = {st: [insets[s["id"]] for s in rooms] for st, rooms in by_storey.items()}
     room_ids_on_storey = {st: [s["id"] for s in rooms] for st, rooms in by_storey.items()}
 
@@ -173,7 +174,7 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
         if pos is None:
             continue
         width = (door_by_id.get(door_id) or {}).get("width_m")
-        portal = _door_portal(pos[0], pos[1], width)
+        portal = door_portal(pos[0], pos[1], width)
         stair_sides = [sid for sid in linked if use_by_id.get(sid) == "stair"]
         non_stair = [sid for sid in linked if use_by_id.get(sid) != "stair"]
         for sid in linked:
@@ -184,7 +185,7 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
                 continue
             obstacles = [insets[other] for other in room_ids_on_storey.get(st, [])
                          if other not in linked]
-            bridge = _connector(portal, pos[0], pos[1], inset, width, obstacles)
+            bridge = connector(portal, pos[0], pos[1], inset, width, obstacles)
             if bridge is not None:
                 doors_on_storey[st].append(bridge)
             elif not portal.intersects(inset):
@@ -209,7 +210,7 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
                 continue
             p = ex.get("position")
             if p is not None:
-                seeds.append((_door_portal(p[0], p[1], ex.get("width_m")), 0.0))
+                seeds.append((door_portal(p[0], p[1], ex.get("width_m")), 0.0))
         if walk_geoms and seeds:
             ground_field = _Field(shapely.union_all(walk_geoms + [g for g, _ in seeds]), seeds)
 

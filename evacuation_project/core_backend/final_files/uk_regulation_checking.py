@@ -77,10 +77,10 @@ def distance_m(pos_a, pos_b):
 # may cite these notes; it never treats them as a compliance verdict. A below-limit measurement is
 # flagged "requires_manual_review", never "non-compliant" -- this tool does not issue verdicts.
 
-_AREA_UNITS = ("sqm", "m2", "m²")
+AREA_UNITS = ("sqm", "m2", "m²")
 
 
-def _rule_kind(rule):
+def rule_kind(rule):
     """Classify a jurisdiction rule into a measurable annotation kind, or None to skip.
 
     Dispatch on ``ifc_element`` + ``ifc_attribute_involved`` (reliable) rather than ``applies_to``,
@@ -98,7 +98,7 @@ def _rule_kind(rule):
         return "door_width"
     if "ifcstair" in element and "flight" not in element and "width" in attr:
         return "stair_width"
-    if "ifcwindow" in element and "area" in attr and unit in _AREA_UNITS:
+    if "ifcwindow" in element and "area" in attr and unit in AREA_UNITS:
         return "window_area"
     if "ifcdoor" in element and ("emergency" in attr or "exit" in attr) and unit == "count":
         return "exits_count"
@@ -121,7 +121,7 @@ def _note(rule, element, element_type, attribute, measured, limit, meets):
     }
 
 
-def _missing(rule, element, element_type, attribute):
+def missing(rule, element, element_type, attribute):
     return {
         "regulation_id": rule["unique_id"],
         "reference": rule.get("doc_reference"),
@@ -143,7 +143,7 @@ def annotate(summary, jurisdiction="england"):
     notes, not_assessed = [], []
 
     for rule in regs.values():
-        kind = _rule_kind(rule)
+        kind = rule_kind(rule)
         if kind is None:
             continue
 
@@ -152,7 +152,7 @@ def annotate(summary, jurisdiction="england"):
             for door in summary.get("doors", []):
                 width = door.get("width_m")
                 if width is None:
-                    not_assessed.append(_missing(rule, door, "door", "width"))
+                    not_assessed.append(missing(rule, door, "door", "width"))
                 else:
                     notes.append(_note(rule, door, "door", "width_m",
                                        round(width, 3), limit, width >= limit))
@@ -162,7 +162,7 @@ def annotate(summary, jurisdiction="england"):
             for stair in summary.get("stairs", []):
                 width = stair.get("width")
                 if width is None:
-                    not_assessed.append(_missing(rule, stair, "stair", "width"))
+                    not_assessed.append(missing(rule, stair, "stair", "width"))
                 else:
                     notes.append(_note(rule, stair, "stair", "width",
                                        round(width, 3), limit, width >= limit))
@@ -172,7 +172,7 @@ def annotate(summary, jurisdiction="england"):
             for window in summary.get("windows", []):
                 area = window.get("area")
                 if area is None:
-                    not_assessed.append(_missing(rule, window, "window", "opening area"))
+                    not_assessed.append(missing(rule, window, "window", "opening area"))
                 else:
                     notes.append(_note(rule, window, "window", "area_m2",
                                        round(area, 3), limit, area >= limit))
@@ -707,7 +707,7 @@ def check_all_rules(summary, jurisdiction="england"):
 # ("cannot check from the IFC alone") are surfaced but do NOT block — they are uncertainty, not
 # violations, and would otherwise fail almost every model on missing fire-ratings etc.
 
-def _slim_flag(f):
+def slim_flag(f):
     """Flatten a raw checker flag into a compact, JSON/UI-friendly row."""
     rule = f.get("rule", {}) or {}
     return {
@@ -732,8 +732,8 @@ def regulation_gate(summary, jurisdiction="england"):
     uses to allow or block scenario generation.
     """
     flags = check_all_rules(summary, jurisdiction)
-    violations = [_slim_flag(f) for f in flags if not f.get("requires_manual_review")]
-    manual_review = [_slim_flag(f) for f in flags if f.get("requires_manual_review")]
+    violations = [slim_flag(f) for f in flags if not f.get("requires_manual_review")]
+    manual_review = [slim_flag(f) for f in flags if f.get("requires_manual_review")]
     return {
         "jurisdiction": jurisdiction,
         "passed": len(violations) == 0,

@@ -115,7 +115,7 @@ def test_fractions_that_do_not_sum_to_one_are_flagged():
     assert "profiles[].fraction" in _fields(_with_simulation(mutate))
 
 
-def test_missing_basis_is_flagged():
+def testmissing_basis_is_flagged():
     assert "pre_movement.basis" in _fields(
         _with_simulation(lambda sim: sim["pre_movement"].update(basis="   ")))
 

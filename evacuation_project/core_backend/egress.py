@@ -12,9 +12,9 @@ from core_backend.space_classifier import classify_spaces
 from core_backend.sample_paths import resolve_ifc
 
 OUTSIDE = "OUTSIDE"
-GROUND_TOLERANCE_M = 0.5      
-STAIR_MAX_DZ_M = 4.0          
-STAIR_MAX_DXY_M = 12.0        
+ground_tolerance_m = 0.5      
+stair_max_dz_m = 4.0          
+stair_max_dxy_m = 12.0        
 
 
 def _dist(a, b):
@@ -23,11 +23,11 @@ def _dist(a, b):
     return math.sqrt(sum((p - q) ** 2 for p, q in zip(a, b)))
 
 
-def _horizontal(a, b):
+def horizontal(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def _nearest_storey_height(z, storeys):
+def nearest_storey_height(z, storeys):
     if z is None or not storeys:
         return None
     return min(storeys, key=lambda s: abs(s["elevation_m"] - z))["height_above_ground_m"]
@@ -41,7 +41,7 @@ def stair_adjacency(spaces, use_type):
         for j in range(i + 1, len(stair_spaces)):
             a, b = stair_spaces[i]["centroid"], stair_spaces[j]["centroid"]
             dz = abs(a[2] - b[2])
-            if 0.1 < dz <= STAIR_MAX_DZ_M and _horizontal(a, b) <= STAIR_MAX_DXY_M:
+            if 0.1 < dz <= stair_max_dz_m andhorizontal(a, b) <= stair_max_dxy_m:
                 pairs.append((stair_spaces[i]["id"], stair_spaces[j]["id"]))
     return pairs
 
@@ -59,8 +59,8 @@ def build_graph(summary, classified, discounted_exits=frozenset()):
         if door["id"] in discounted_exits:
             continue
         p = door.get("position")
-        height = _nearest_storey_height(p[2], storeys) if p else None
-        if height is not None and abs(height) <= GROUND_TOLERANCE_M:
+        height = nearest_storey_height(p[2], storeys) if p else None
+        if height is not None and abs(height) <= ground_tolerance_m:
             final_exits[door["id"]] = {
                 "id": door["id"], "name": door.get("name"), "width_m": door.get("width_m"),
                 "position": p, "storey_height_m": height,
@@ -91,23 +91,23 @@ def build_graph(summary, classified, discounted_exits=frozenset()):
     return adjacency, positions, final_exits
 
 
-def _node_key(node):
+def node_key(node):
     return (1, node[0], node[1]) if isinstance(node, tuple) else (0, node, "")
 
 
-def _bfs_prev(start, adjacency):
+def bfc_prev(start, adjacency):
     prev = {start: None}
     queue = deque([start])
     while queue:
         node = queue.popleft()
-        for neighbour in sorted(adjacency[node], key=_node_key):
+        for neighbour in sorted(adjacency[node], key=node_key):
             if neighbour not in prev:
                 prev[neighbour] = node
                 queue.append(neighbour)
     return prev
 
 
-def _reconstruct(prev, target):
+def reconstruct(prev, target):
     if target not in prev:
         return None
     path, node = [], target
@@ -117,7 +117,7 @@ def _reconstruct(prev, target):
     return list(reversed(path))
 
 
-def _path_distance(path, positions):
+def path_distance(path, positions):
     total, previous = 0.0, None
     for node in path:
         p = positions.get(node)
@@ -130,12 +130,12 @@ def _path_distance(path, positions):
 
 
 def nearest_exit(space_id, adjacency, positions):
-    prev = _bfs_prev(space_id, adjacency)
+    prev = bfc_prev(space_id, adjacency)
     best = None
     for node in prev:
         if isinstance(node, tuple) and node[0] == "EXIT":
-            path = _reconstruct(prev, node)
-            distance = _path_distance(path, positions)
+            path = reconstruct(prev, node)
+            distance = path_distance(path, positions)
             if best is None or distance < best[1]:
                 best = (node[1], distance, path)
     if best is None:
@@ -242,7 +242,7 @@ def discount_exit(summary, classified, exit_id, jurisdiction="england"):
 
 if __name__ == "__main__":
 
-    use_llm = "--llm" in sys.argv
+    use_llm = "llm" in sys.argv
     args = [a for a in sys.argv if not a.startswith("--")]
     summary = parser_summary(resolve_ifc(args))
     classified = classify_spaces(summary["spaces"], use_llm=use_llm)

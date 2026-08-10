@@ -11,7 +11,7 @@ from core_backend.exit_names import exit_names, name_exit_ids, named
 from core_backend.ifc_parser import parser_summary
 from core_backend.uk_regulation_checking import regulation_gate
 from core_backend.llm import select_llm
-from core_backend.scenario_generation_llm import build_full_scenario
+from core_backend.scenario_generation_llm_1 import build_full_scenario
 from core_backend.validation import validate
 from core_backend.export_results import export_records, build_records
 

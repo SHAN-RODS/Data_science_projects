@@ -10,7 +10,7 @@ load_dotenv()
 NO_SAMPLING_PARAMETER= ("opus-4-8", "opus-4-7", "sonnet-5", "fable-5", "mythos-5")
 
 
-def _accepts_temperature(model_name):
+def accepts_temperature(model_name):
     name = (model_name or "").lower()
     return not any(tag in name for tag in NO_SAMPLING_PARAMETER)
 
@@ -27,7 +27,7 @@ def select_llm(max_tokens=1024, timeout=None):
         model = os.getenv("ANTHROPIC_MODEL")
         kwargs = {"model_name": model, "max_tokens": max_tokens,
                   "default_request_timeout": req_timeout, "max_retries": max_retries}
-        if _accepts_temperature(model):
+        if accepts_temperature(model):
             temperature = os.getenv("ANTHROPIC_TEMPERATURE")
             if temperature is not None:
                 kwargs["temperature"] = float(temperature)

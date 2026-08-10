@@ -14,7 +14,7 @@ from core_backend.sample_paths import default_ifc
 
 EXIT_CAPACITY_PERSONS_PER_M = 200
 
-_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 
 SPEED_RANGE_MS = (0.5, 2.0)
 SHOULDER_RANGE_M = (0.30, 0.70)
@@ -25,7 +25,7 @@ ALLOWED_MOVEMENT_MODELS = {"steering", "sfpe"}
 FRACTION_TOLERANCE = 0.01
 
 
-def _allowed_floats(obj):
+def allowed_floats(obj):
     allowed = set()
 
     def add(value):
@@ -82,7 +82,7 @@ def _allowed_floats(obj):
     return allowed
 
 
-def _is_grounded(value, allowed):
+def is_grounded(value, allowed):
     if value <= 12 and value == int(value):
         return True
     for a in allowed:
@@ -106,17 +106,17 @@ def _scenario_text(scn, id_tokens):
 
 
 def number_factcheck(obj):
-    allowed = _allowed_floats(obj)
+    allowed = allowed_floats(obj)
     id_tokens = ({e.get("id") for e in obj["exits"]} | {s.get("guid") for s in obj["spaces"]}
                  | set(exit_names(obj["exits"]).values()))
     ungrounded = []
     for scn in obj["scenarios"]:
-        for token in _NUM_RE.findall(_scenario_text(scn, id_tokens)):
+        for token in NUM_RE.findall(_scenario_text(scn, id_tokens)):
             try:
                 value = float(token)
             except ValueError:
                 continue
-            if not _is_grounded(value, allowed):
+            if not is_grounded(value, allowed):
                 ungrounded.append({"scenario": scn["id"], "value": token})
     return ungrounded
 
