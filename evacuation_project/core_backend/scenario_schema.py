@@ -1,7 +1,6 @@
+#JSON Schema for the entire residential building.
 
-#JSON Schema for the whole-building evacuation scenarios.
-
-SCENARIO_SCHEMA = {
+scenario_schema = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "EvacuationScenarioObject",
     "type": "object",
@@ -9,7 +8,6 @@ SCENARIO_SCHEMA = {
                  "scenarios", "validation", "not_assessed"],
     "properties": {
         "schema_version": {"type": "string"},
-        # How to line this object up with the geometry an egress simulator imports from the same IFC.
         "model": {
             "type": "object",
             "required": ["units"],
@@ -52,8 +50,6 @@ SCENARIO_SCHEMA = {
                 "required": ["id"],
                 "properties": {
                     "id": {"type": "string"},
-                    # the plain name the scenarios, routes and app refer to this exit by ("Exit 1");
-                    # `name` stays the IFC's own label so the door is still findable in the model
                     "exit_name": {"type": ["string", "null"]},
                     "name": {"type": ["string", "null"]},
                     "type": {"type": "string"},
@@ -62,7 +58,6 @@ SCENARIO_SCHEMA = {
                 },
             },
         },
-        # Internal doors: the room-to-room connections a simulator rebuilds as door components.
         "doors": {
             "type": "array",
             "items": {
@@ -97,7 +92,6 @@ SCENARIO_SCHEMA = {
                 },
             },
         },
-        # Vertical links the egress graph actually walked (stair space <-> stair space).
         "stair_links": {"type": "array"},
         "elevators": {"type": "array"},
         "spaces": {
@@ -122,7 +116,6 @@ SCENARIO_SCHEMA = {
                     "travel_distance_method": {"type": ["string", "null"]},
                     "most_remote_point": {"type": ["array", "null"]},
                     "reachable": {"type": "boolean"},
-                    # why a measurement degraded or failed; null when the geodesic engine measured it
                     "reachability_note": {"type": ["string", "null"]},
                 },
             },
@@ -165,8 +158,6 @@ SCENARIO_SCHEMA = {
                         "type": "object",
                         "required": ["exits_available", "exits_discounted", "occupants_total"],
                         "properties": {
-                            # the plain names ("Exit 1"), with the GlobalIds they resolve to beside
-                            # them — the names are for the reader, the ids for the simulator
                             "exits_available": {"type": "array", "items": {"type": "string"}},
                             "exits_discounted": {"type": "array", "items": {"type": "string"}},
                             "exits_available_ifc_ids": {"type": "array",
@@ -183,8 +174,6 @@ SCENARIO_SCHEMA = {
                     "bottlenecks": {"type": "array"},
                     "risks": {"type": "array"},
                     "narrative": {"type": "string"},
-                    # The egress-simulation set-up. These are the only AI-originated numbers in the
-                    # object, so each carries a basis/reason and is range-checked in validation.py.
                     "simulation": {
                         "type": "object",
                         "required": ["movement_model", "pre_movement", "profiles"],
@@ -233,9 +222,6 @@ SCENARIO_SCHEMA = {
                             },
                         },
                     },
-                    # Where this scenario's occupants start: computed deterministically from the
-                    # per-room occupant load and the AI's multipliers (occupant_placement.py), not
-                    # asked of the model. Optional so objects generated before it existed still pass.
                     "occupancy": {
                         "type": "object",
                         "properties": {
@@ -243,7 +229,6 @@ SCENARIO_SCHEMA = {
                             "occupancy_state": {"type": ["string", "null"]},
                             "placed_total": {"type": "integer", "minimum": 0},
                             "unplaced_total": {"type": "integer", "minimum": 0},
-                            # occupants_total minus what the scenario's own multipliers leave room for
                             "unallocated_total": {"type": "integer", "minimum": 0},
                             "unallocated_why": {"type": ["string", "null"]},
                             "scenario_room_capacity": {"type": "integer", "minimum": 0},
@@ -263,7 +248,6 @@ SCENARIO_SCHEMA = {
                                         "computed_occupant_load": {"type": ["integer", "null"],
                                                                    "minimum": 0},
                                         "occupants": {"type": "integer", "minimum": 1},
-                                        # the room centroid, in metres, IFC world coordinates
                                         "seed_point": {"type": ["array", "null"]},
                                         "profiles": {"type": "object"},
                                         "goal": {"type": "string"},

@@ -7,13 +7,18 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
-USE_TYPES = [
+import sys
+from collections import Counter
+from core_backend.ifc_parser import parser_summary
+from core_backend.sample_paths import resolve_ifc
+
+use_types = [
     "bedroom", "living", "kitchen", "kitchen_living", "dining", "dwelling",
     "circulation", "stair", "sanitary", "sauna", "storage", "plant",
     "parking", "communal_amenity", "commercial", "measurement_zone", "unknown",
 ]
 
-KEYWORD_GROUPS = [
+keyword_group = [
     ("measurement_zone", ["gfa", "gross floor", "netarea", "net area", "heated netarea",
                           "volume", "bruttoareal", "floor area"]),
     ("stair", ["staircase", "stair", "stairwell", "trapperom", "trapp", "porras"]),
@@ -36,13 +41,13 @@ KEYWORD_GROUPS = [
                      "aula", "kaytava", "hall"]),
 ]
 
-KEYWORD_CONFIDENCE = 0.9
-DWELLING_CONFIDENCE = 0.75
-CODE_CONFIDENCE = 0.85
+keyword_confidence = 0.9
+dwelling_confidence = 0.75
+code_confidence = 0.85
 
-DWELLING_RE = re.compile(r"\b\d+\s*h\b")
+dwelling_re = re.compile(r"\b\d+\s*h\b")
 
-OCCUPANCY_CODE_PREFIXES = [
+occupancy_code_prefixes = [
     ("0121-11-00","living"),            
     ("0121-12","sanitary"),          
     ("0121-64","kitchen"),
@@ -67,9 +72,9 @@ def classify_code(occupancy_code):
     if not occupancy_code:
         return None, None
     code = str(occupancy_code).strip()
-    for prefix, use_type in OCCUPANCY_CODE_PREFIXES:
+    for prefix, use_type in occupancy_code_prefixes:
         if code.startswith(prefix):
-            return use_type,CODE_CONFIDENCE
+            return use_type,code_confidence
     return None, None
 
 
@@ -85,12 +90,12 @@ def classify_name(long_name, name):
     text = normalize(long_name, name)
     if not text:
         return "unknown", 0.0, "none"
-    if DWELLING_RE.search(text):
-        return "dwelling", DWELLING_CONFIDENCE, "dictionary"
-    for use_type, keywords in KEYWORD_GROUPS:
+    if dwelling_re.search(text):
+        return "dwelling", dwelling_confidence, "dictionary"
+    for use_type, keywords in keyword_group:
         for kw in keywords:
             if kw in text:
-                return use_type, KEYWORD_CONFIDENCE, "dictionary"
+                return use_type, keyword_confidence, "dictionary"
     return "unknown", 0.0, "none"
 
 
@@ -110,12 +115,12 @@ def classify_dictionary(space):
     }
 
 
-LLM_USE_TYPES = ", ".join(u for u in USE_TYPES if u != "unknown")
+llm_use_types = ", ".join(u for u in use_types if u != "unknown")
 
-LLM_INSTRUCTIONS = (
+llm_instructions = (
     "You classify spaces from a building's IFC model into a controlled vocabulary of use-types, "
     "for a fire-evacuation analysis. For each space choose the single best use_type from this list:\n"
-    f"  {LLM_USE_TYPES}, unknown\n"
+    f"  {llm_use_types}, unknown\n"
     "Guidance: 'measurement_zone' is a BIM area/volume overlay, not a real room; 'dwelling' is a "
     "whole apartment; 'circulation' covers corridors/lobbies/landings; 'plant' covers shafts, risers "
     "and technical rooms. Base your choice ONLY on the provided name, long_name, area and storey — do "
@@ -132,8 +137,8 @@ class SpaceClassificationList(BaseModel):
     classifications: List[SpaceClassification]
 
 
-def _llm_prompt(items):
-    lines = [LLM_INSTRUCTIONS, "", "Spaces to classify:"]
+def llm_prompt(items):
+    lines = [llm_instructions, "", "Spaces to classify:"]
     for index, (_, sample) in enumerate(items):
         area = sample.get("area")
         storey = (sample.get("storey") or {}).get("name")
@@ -160,12 +165,12 @@ def classify_llm(unresolved, llm=None):
 
     try:
         structured = llm.with_structured_output(SpaceClassificationList)
-        result = structured.invoke(_llm_prompt(items))
-    except Exception as exc:  # noqa: BLE001 - leave spaces as "unknown" so they surface downstream
+        result = structured.invoke(llm_prompt(items))
+    except Exception as exc:  
         print(f"LLM classification unavailable ({exc}); leaving spaces as 'unknown'.")
         return {}
 
-    allowed = set(USE_TYPES)
+    allowed = set(use_types)
     out = {}
     for c in result.classifications:
         if 0 <= c.index < len(items):
@@ -195,12 +200,8 @@ def classify_spaces(spaces, use_llm=True, llm=None):
 
 
 if __name__ == "__main__":
-    import sys
-    from collections import Counter
-    from core_backend.ifc_parser import parser_summary
-    from core_backend.sample_paths import resolve_ifc
 
-    use_llm = "--llm" in sys.argv
+    use_llm = "llm" in sys.argv
     args = [a for a in sys.argv if not a.startswith("--")]
     summary = parser_summary(resolve_ifc(args))
 
@@ -229,6 +230,6 @@ if __name__ == "__main__":
             key=lambda pair: (pair[0] or "", pair[1] or ""),
         )
         print(f"\nUnresolved -> LLM pass: {len(unresolved)} spaces, "
-              f"{len(distinct)} distinct name(s). Run with --llm to classify them.")
+              f"{len(distinct)} distinct name(s). Run with llm to classify them.")
         for long_name, name in distinct[:25]:
             print(f"  long_name={long_name!r:20} name~={name!r}")

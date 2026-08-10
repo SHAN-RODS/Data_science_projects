@@ -34,11 +34,6 @@ def _nearest_storey_height(z, storeys):
 
 
 def stair_adjacency(spaces, use_type):
-    """Stair spaces that sit above/below each other close enough to be one shaft -> [(id_a, id_b), ...].
-
-    Shared by build_graph and the Pathfinder export so the geometry rule (STAIR_MAX_DZ_M /
-    STAIR_MAX_DXY_M) is stated in exactly one place.
-    """
     stair_spaces = [sp for sp in spaces
                     if use_type.get(sp["id"]) == "stair" and sp["centroid"] is not None]
     pairs = []
@@ -97,19 +92,10 @@ def build_graph(summary, classified, discounted_exits=frozenset()):
 
 
 def _node_key(node):
-    """Stable sort key over the graph's mixed node types: space-id / OUTSIDE strings and
-    ("EXIT", door_id) tuples."""
     return (1, node[0], node[1]) if isinstance(node, tuple) else (0, node, "")
 
 
 def _bfs_prev(start, adjacency):
-    """BFS predecessor tree from start over the adjacency graph.
-
-    Neighbours are visited in a sorted order, not set order. Adjacency is built from sets, whose
-    iteration order for strings changes with the interpreter's hash seed — leaving that unsorted made
-    equidistant exits tie-break differently between runs, so the same model could report a different
-    nearest_exit (and a different fallback distance) each time it was parsed.
-    """
     prev = {start: None}
     queue = deque([start])
     while queue:
@@ -191,9 +177,6 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
             method = td["travel_distance_method"]
             remote_point = td["most_remote_point"]
         elif td is not None and exit_id is not None:
-            # The geodesic engine measured this room and failed, but the egress graph *can* route out
-            # of it. A geometry defect must not read as "no way out" when the topology says otherwise:
-            # fall back to the approximate distance and say so, rather than dropping the room.
             distance = round(bfs_distance, 1) if bfs_distance is not None else None
             reachable = True
             method = "fallback_centroid (geodesic grid disconnected)"
@@ -222,7 +205,6 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
             "use_type": ut,
             "storey": sp["storey"],
             "area_m2": sp["area"],
-            # (x, y, z) in metres, IFC world coords — the occupant seed point for an egress simulator
             "centroid": sp["centroid"],
             "occupant_load": occ["occupant_load"],
             "occupant_basis": occ["occupant_basis"],
@@ -231,7 +213,6 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
             "travel_distance_method": method,
             "most_remote_point": remote_point,
             "reachable": reachable,
-            # why the measurement degraded or failed; None when the geodesic engine measured it
             "reachability_note": note,
         })
 
@@ -250,7 +231,6 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
         "final_exits": list(final_exits.values()),
         "not_assessed": not_assessed,
         "excluded_measurement_zones": excluded_measurement_zones,
-        # what the geodesic engine could not do, for the same reason not_assessed exists
         "travel_engine_report": travel_report,
     }
 

@@ -372,7 +372,7 @@ def _exits_block(exits):
 
 
 # an IfcStair's base and top are matched to storey elevations within this tolerance
-_STOREY_MATCH_TOL_M = 1.0
+storey_match_tol_m = 1.0
 
 
 def _circulation_block(summary):
@@ -385,7 +385,7 @@ def _circulation_block(summary):
         if z is None or not storeys:
             return None
         near = min(storeys, key=lambda s: abs(s["elevation_m"] - z))
-        return near["name"] if abs(near["elevation_m"] - z) <= _STOREY_MATCH_TOL_M else None
+        return near["name"] if abs(near["elevation_m"] - z) <= storey_match_tol_m else None
 
     out = []
     for st in summary.get("stairs", []):

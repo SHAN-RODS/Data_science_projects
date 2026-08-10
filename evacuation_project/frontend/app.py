@@ -38,7 +38,7 @@ except Exception:
 # header
 st.title("NLP Assisted Evacuation Scenario Generator")
 st.caption(
-    "Upload an IFC/BIM model. The building is first checked against the selected regulation (pass/fail) "
+    "Upload an IFC/BIM model. The building is first checked against the selected regulation either pass or fail "
     "and later gives the AI generated scenarios."
     
 )
@@ -112,18 +112,16 @@ def render_gate(gate, label):
               "issue": v["issue"], "reference": v["reference"]} for v in gate["violations"]],
             use_container_width=True, hide_index=True)
     if gate["manual_review"]:
-        with st.expander(f"Manual review — {n_mr} item(s) (cannot be decided from the IFC; non-blocking)"):
+        with st.expander(f"Manual review — {n_mr} items (cannot be decided from the IFC; non-blocking)"):
             st.dataframe(
                 [{"rule": v["regulation_id"],
                   "element": f"{v['element_type']}/{v['element_name']}",
                   "issue": v["issue"]} for v in gate["manual_review"]],
                 use_container_width=True, hide_index=True)
 
-
 gate = st.session_state.gate_result
 obj = st.session_state.scenario_object
 
-# landing / instructions
 if gate is None:
     st.subheader("How it works")
     c1, c2, c3, c4 = st.columns(4)
@@ -137,7 +135,6 @@ if gate is None:
             "and writes routes, bottlenecks, risks and a narrative from those numbers.")
     st.stop()
 
-# Step 1 verdict — always shown once a check has run
 render_gate(gate, jurisdiction_label)
 st.divider()
 
@@ -152,10 +149,8 @@ if obj is None:
             "single AI generation call.")
     st.stop()
 
-# ---- generated scenario view ----
 building = obj["building"]
 validation = obj.get("validation", {})
-# every exit is shown as "Exit 1", never as its IFC GlobalId; the ids stay in the downloaded JSON
 exit_labels = exit_names(obj.get("exits", []))
 
 st.subheader(f"Building — {building.get('project')}")
@@ -180,8 +175,6 @@ with vb3:
     else:
         st.warning(f"Fact-check: {len(validation.get('ungrounded_numbers', []))} number(s) to review")
 
-# The invariants above say pass/fail; this is the detail behind a failing one, so a problem with the
-# study set-up or with placing the occupants is never left as a single red word.
 sim_issues = validation.get("simulation_parameter_issues", [])
 place_issues = validation.get("placement_issues", [])
 if sim_issues or place_issues:
@@ -203,7 +196,7 @@ with st.expander(f"Final exits ({len(obj.get('exits', []))}) — what each name 
     st.dataframe(
         [{"exit": name, "width_m": exit_by_id[exit_id].get("width_m"),
           "IFC name": exit_by_id[exit_id].get("name"), "IFC GlobalId": exit_id}
-         for exit_id, name in exit_labels.items()],          # in plan order, Exit 1 first
+         for exit_id, name in exit_labels.items()],          
         use_container_width=True, hide_index=True)
 
 not_assessed = obj.get("not_assessed", [])
@@ -223,8 +216,6 @@ labels = {f"{s['id']} — {s.get('type')}": s for s in scenarios}
 choice = st.radio("Select a scenario variant:", list(labels.keys()), horizontal=True)
 scn = labels[choice]
 
-# A scenario generated before exits had names quotes GlobalIds in its prose; rewrite them for the
-# page so an object reloaded from disk reads the same way a fresh one does.
 scn = name_exit_ids(scn, exit_labels)
 
 st.markdown(f"#### {scn.get('title')}")
@@ -235,7 +226,6 @@ cc2.metric("Occupants to evacuate", cond.get("occupants_total"))
 cc3.metric("Exits available", len(cond.get("exits_available", [])))
 cc4.metric("Exits discounted", len(cond.get("exits_discounted", [])))
 if cond.get("exits_discounted"):
-    # named() passes a name through unchanged, so an object saved before exits had names still reads
     discounted = [str(named(e, exit_labels)) for e in cond["exits_discounted"]]
     st.warning(f"Exit(s) discounted in this variant: {', '.join(discounted)}")
 
@@ -265,13 +255,11 @@ with d2:
     for line in scn.get("risks", []):
         st.write(f"- {line}")
 
-# The occupants this scenario could not seed is a safety statement, not set-up detail, so it stays
-# even though the placement working itself is not shown on the page (it travels in the JSON).
 occupancy = scn.get("occupancy") or {}
 if occupancy.get("unplaced_total"):
     st.warning(f"{occupancy['unplaced_total']} occupant(s) sit in "
                f"{len(occupancy.get('unplaced_rooms', []))} room(s) with no traced egress path. "
-               f"They are reported, not moved into rooms that can escape — a simulation run from "
+               f"They are reported, not moved into rooms that can escape and a simulation run from "
                f"this record will be short by that many people until those rooms are resolved.")
 if occupancy.get("unallocated_why"):
     st.warning(occupancy["unallocated_why"])

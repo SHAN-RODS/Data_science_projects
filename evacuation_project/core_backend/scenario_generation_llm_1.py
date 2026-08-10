@@ -4,6 +4,9 @@
 #model as facts; the AI only decides WHICH scenarios are worth generating and writes them up, in a SINGLE
 #structured API call. Regulation pass/fail is a separate blocking gate (see uk_regulation_checking).
 
+#This is the main part of the project which focuses on suggesting evacuation scenarios using LLM and all the computed values of occupancy, 
+# travel distance and egress are given to the LLM such that it will decide adn give the necessary scenarios
+
 import os
 import sys
 from collections import Counter
@@ -26,24 +29,16 @@ DISTANCE_METHOD = ("geodesic shortest path over a per-storey walkable raster (0.
                    "room's most remote point, plus stair-going descent for upper storeys — a "
                    "geometry-based measurement (approx to cell size), non-verdict")
 
-# How many "busiest exit unavailable" variants to precompute so the AI's degraded scenarios are backed
-# by real recomputed distances. Each one is a full raster+Dijkstra pass per storey, hence the bound.
 DISCOUNT_VARIANTS = int(os.getenv("EVAC_DISCOUNT_VARIANTS", "2"))
-
 
 def _round(value, ndigits):
     return round(value, ndigits) if isinstance(value, (int, float)) else value
 
-
-# ---------------------------------------------------------------------------------------------------
-# What the single API call returns: the AI-chosen scenario set. The numbers are NOT the model's job.
-# ---------------------------------------------------------------------------------------------------
 class Route(BaseModel):
     from_area: str = Field(description="where occupants start (a storey or space name)")
     via: str = Field(default="", description="circulation/stair route taken")
     to_exit: str = Field(description="the exit name they leave by, e.g. 'Exit 2'")
     note: str = Field(default="", description="short note, e.g. approx distance or a caveat")
-
 
 class ScenarioConditions(BaseModel):
     exits_available: List[str] = Field(description="exit names that stay open in this scenario, "
@@ -55,12 +50,8 @@ class ScenarioConditions(BaseModel):
     occupants_total: int = Field(description="occupants to evacuate under this scenario's state; must "
                                              "not exceed the computed total occupant load")
 
-
 DISTRIBUTIONS = "constant, uniform, normal, lognormal"
-
-
 class PreMovement(BaseModel):
-    """Pre-travel activity time — how long occupants take to react before they start moving."""
     distribution: str = Field(description=f"one of: {DISTRIBUTIONS}")
     mean_s: float = Field(description="mean pre-movement time in seconds")
     sd_s: float = Field(default=0.0, description="standard deviation in seconds (0 for constant)")
@@ -68,9 +59,7 @@ class PreMovement(BaseModel):
                                    "occupancy type, whether occupants may be asleep, and the alarm "
                                    "arrangement you are assuming")
 
-
 class OccupantProfile(BaseModel):
-    """One population group: how big its people are and how fast they walk."""
     name: str = Field(description="e.g. 'adult', 'child', 'reduced mobility'")
     fraction: float = Field(description="share of the occupants in this group, 0..1; the fractions "
                                         "across all profiles must sum to 1.0", ge=0, le=1)
@@ -82,7 +71,6 @@ class OccupantProfile(BaseModel):
 
 
 class OccupancyMultiplier(BaseModel):
-    """How a scenario's occupancy state scales the computed load for one use-type."""
     use_type: str = Field(description="a use_type appearing in the space list, e.g. 'dwelling'")
     multiplier: float = Field(
         description="0.0..1.0 INCLUSIVE — a hard limit, never above 1.0. It can only empty or thin a "
@@ -90,10 +78,7 @@ class OccupancyMultiplier(BaseModel):
         ge=0, le=1)
     reason: str
 
-
 class SimulationSetup(BaseModel):
-    """The egress-simulation parameters for this scenario. Unlike the occupant loads and travel
-    distances (which are computed and off-limits), these ARE yours to choose."""
     movement_model: str = Field(description="'steering' (agent-based) or 'sfpe' (hydraulic)")
     end_time_s: float = Field(description="how long to let the simulation run, seconds")
     pre_movement: PreMovement
@@ -103,10 +88,7 @@ class SimulationSetup(BaseModel):
         description="how you scaled the computed occupant load to reach this scenario's "
                     "occupants_total; omit or leave empty for a full-occupancy scenario")
 
-
 class ScenarioContent(BaseModel):
-    # no id field: the scenarios are numbered SCN-001, SCN-002 … on assembly, so the model cannot
-    # hand back a duplicate or a differently-styled id
     type: str = Field(description="e.g. 'base_case', 'one_exit_discounted'")
     title: str
     conditions: ScenarioConditions
@@ -122,14 +104,12 @@ class ScenarioContent(BaseModel):
     ai_explanation: str = Field(
         description="short reasoning: why you chose this scenario and what it shows")
 
-
 class BuildingAnalysis(BaseModel):
     scenarios: List[ScenarioContent] = Field(
         description="At least FOUR distinct scenarios. The first must always be the base case with all "
                     "exits available and normal occupancy. The rest must be selected autonomously from "
                     "this building's geometry, exit arrangement, storeys, occupant distribution and "
                     "computed travel distances — not chosen at random.")
-
 
 _SYSTEM = (
     "You are a fire-safety engineer preparing whole-building evacuation SCENARIOS (the input description "
@@ -198,12 +178,7 @@ _SYSTEM = (
 
 _TASK = "Produce the BuildingAnalysis: your chosen scenarios, written from the computed facts."
 
-
-# ---------------------------------------------------------------------------------------------------
-# Grounding: the computed egress results are the facts the model reasons over.
-# ---------------------------------------------------------------------------------------------------
 def _resolve_exits(summary, classified, grounded):
-    """The computed ground-level final exits; falls back to all emergency exits if none sit at grade."""
     exits = list(grounded["final_exits"])
     if exits:
         return exits
@@ -213,9 +188,7 @@ def _resolve_exits(summary, classified, grounded):
     return [{"id": d["id"], "name": d.get("name"), "width_m": d.get("width_m"),
              "position": d.get("position")} for d in summary.get("emergency_exits", [])]
 
-
 def _reg_refs(jurisdiction):
-    """Compact list of the jurisdiction's rules, to ground each scenario's regulatory_justification."""
     try:
         regs = load_regs(jurisdiction)
     except Exception:
@@ -223,9 +196,7 @@ def _reg_refs(jurisdiction):
     return [{"id": r.get("unique_id"), "name": r.get("regulation_name"),
              "reference": r.get("doc_reference")} for r in regs.values()]
 
-
 def _storey_rollup(grounded):
-    """Per-storey occupants / space count / longest computed travel distance / unreachable count."""
     rollup = {}
     for s in grounded["spaces"]:
         name = (s["storey"] or {}).get("name", "Unknown")
@@ -241,12 +212,6 @@ def _storey_rollup(grounded):
 
 
 def _degraded_cases(summary, classified, grounded, jurisdiction, names, limit=DISCOUNT_VARIANTS):
-    """Recompute egress with each of the busiest exits unavailable, so the AI's degraded scenarios have
-    real numbers to cite.
-
-    The result is carried in the output object as well as fed to the model, so every degraded figure
-    the narrative quotes traces back to the record (validation.number_factcheck relies on this).
-    """
     if limit <= 0:
         return []
     usage = Counter(s["nearest_exit"] for s in grounded["spaces"] if s["nearest_exit"])
@@ -268,11 +233,6 @@ def _degraded_cases(summary, classified, grounded, jurisdiction, names, limit=DI
 
 
 def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded, names):
-    """The computed facts, written with the exits' plain names.
-
-    GlobalIds are deliberately kept out of the exit lines: the model can only quote what it is shown,
-    so the surest way to stop a GUID appearing in the output is never to put one in front of it.
-    """
     spaces = grounded["spaces"]
     lines = [
         f"Building: {building['project']} | storeys: {building['storeys']} | "
@@ -340,9 +300,6 @@ def _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded,
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------------------------------
-# Deterministic assembly of the whole-building object around the AI-chosen scenarios.
-# ---------------------------------------------------------------------------------------------------
 def _building_block(summary, grounded, jurisdiction):
     total_area = round(sum(s["area_m2"] for s in grounded["spaces"] if s["area_m2"]), 1)
     total_occ = sum(s["occupant_load"] for s in grounded["spaces"] if s["occupant_load"])
@@ -370,11 +327,9 @@ def _spaces_block(grounded, classified, names):
             "use_type_source": c.get("use_type_source"),
             "storey": (s["storey"] or {}).get("name"),
             "area_m2": _round(s["area_m2"], 2),
-            # where a simulator seeds this room's occupants (metres, IFC world coords)
             "centroid": [_round(v, 2) for v in s["centroid"]] if s["centroid"] else None,
             "occupant_load": s["occupant_load"],
             "occupant_basis": s["occupant_basis"],
-            # the GlobalId a simulator keys on, and the name everything readable refers to it by
             "nearest_exit": s["nearest_exit"],
             "nearest_exit_name": named(s["nearest_exit"], names),
             "travel_distance_m": _round(s["travel_distance_m"], 1),
@@ -387,30 +342,20 @@ def _spaces_block(grounded, classified, names):
 
 
 def _point(p):
-    """A position tuple as a plain JSON array of metres, or None."""
     return [_round(v, 2) for v in p] if p else None
 
 
 def _exits_block(exits, names):
-    """The final exits, each carrying the plain name the rest of the output refers to it by.
-
-    ``name`` stays the IFC's own label (a Revit type string, usually) so the door can still be found
-    in the model; ``exit_name`` is what a reader sees.
-    """
     order = {exit_id: n for n, exit_id in enumerate(names)}      # names are in plan order
     return [{"id": e["id"], "exit_name": named(e["id"], names), "name": e.get("name"),
              "type": "final_exit", "width_m": _round(e.get("width_m"), 2),
              "position": _point(e.get("position"))}
             for e in sorted(exits, key=lambda e: order.get(e["id"], len(order)))]
 
-
-# an IfcStair's base and top are matched to storey elevations within this tolerance
-_STOREY_MATCH_TOL_M = 1.0
+storey_match_tol_m = 1.0
 
 
 def _circulation_block(summary):
-    """The IfcStair elements, enriched with the flight geometry and storey span an egress simulator
-    needs to rebuild the vertical connections (all of it already parsed, none of it exported before)."""
     flights = {f["id"]: f for f in summary.get("stair_flights", [])}
     storeys = summary.get("storeys", [])
 
@@ -418,7 +363,7 @@ def _circulation_block(summary):
         if z is None or not storeys:
             return None
         near = min(storeys, key=lambda s: abs(s["elevation_m"] - z))
-        return near["name"] if abs(near["elevation_m"] - z) <= _STOREY_MATCH_TOL_M else None
+        return near["name"] if abs(near["elevation_m"] - z) <= storey_match_tol_m else None
 
     out = []
     for st in summary.get("stairs", []):
@@ -441,8 +386,6 @@ def _circulation_block(summary):
 
 
 def _stair_links_block(summary, classified):
-    """Stair spaces the egress graph joins vertically — the connectivity travel_distance actually
-    walked, so a simulator's own vertical links can be checked against it."""
     use_type = {c["guid"]: c["use_type"] for c in classified}
     storey_of = {s["id"]: (s["storey"] or {}).get("name") for s in summary["spaces"]}
     return [{"space_a": a, "space_b": b, "storey_a": storey_of.get(a), "storey_b": storey_of.get(b)}
@@ -450,7 +393,6 @@ def _stair_links_block(summary, classified):
 
 
 def _doors_block(summary, exits):
-    """Internal doors — the room-to-room connections. Final exits are excluded (they are in `exits`)."""
     final = {e["id"] for e in exits}
     links = summary.get("door_space_links", {})
     return [{"id": d["id"], "name": d.get("name"), "type": "internal_door",
@@ -466,12 +408,9 @@ def _elevators_block(summary):
 
 
 def _model_block(summary):
-    """How to line this object up with the geometry an egress simulator imports from the same IFC."""
     return {
         "source_ifc": summary.get("source_ifc"),
         "units": "m",
-        # parser_summary builds spaces with use-world-coords=True, so every position/centroid here is
-        # already in the IFC's world frame — no re-projection needed on import.
         "coordinate_system": "ifc_world_coordinates",
         "geometry_note": ("geometry is NOT carried in this object — import the same IFC into the "
                           "simulator and key on the IFC GlobalIds used throughout"),
@@ -479,14 +418,6 @@ def _model_block(summary):
 
 
 def _assemble_scenario(sc, number, names):
-    """One AI-written scenario, with its id assigned here in generation order (SCN-001, SCN-002, …)
-    rather than by the model, so the ids are uniform and cannot collide.
-
-    The model names exits ("Exit 3"); the matching GlobalIds are resolved here and carried beside
-    them, so the conditions read as English while a simulator still has the ids to key on. The prose
-    is swept for GlobalIds on the way past — the model is never shown one, so this should be a no-op,
-    but a GUID in a bottleneck line is exactly the thing this rename exists to stop.
-    """
     return {
         "id": f"SCN-{number:03d}",
         "type": sc.type,
@@ -515,18 +446,6 @@ GENERATION_ATTEMPTS = int(os.getenv("EVAC_GEN_ATTEMPTS", "3"))
 
 
 def _invoke_structured(llm, prompt, attempts=None):
-    """The generation call, retried with the schema's own rejection handed back to the model.
-
-    The scenario call is the expensive one — 16k tokens and up to a 600 s read — and it is a single
-    shot. One field the model puts out of range otherwise throws the entire run away: an
-    ``occupancy_multiplier`` above 1.0 is the case seen in practice, because a model reaching for a
-    "crowded" scenario tries to scale occupancy up, which the schema forbids by design (a computed
-    occupant load is already a room's code-derived capacity).
-
-    Showing the model the exact validation error lets it correct that one field rather than the user
-    losing the whole generation. The constraints themselves are never relaxed — a reply that keeps
-    breaking them still raises, so this cannot become a way to smuggle an invalid value through.
-    """
     structured = llm.with_structured_output(BuildingAnalysis)
     attempts = max(1, attempts if attempts is not None else GENERATION_ATTEMPTS)
     last_error = None
@@ -551,26 +470,20 @@ def _invoke_structured(llm, prompt, attempts=None):
 
 
 def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, model_label=None):
-    """Assemble the whole-building scenario object: computed egress + ONE grounded LLM call for the
-    scenario set + the regulation gate."""
     if llm is None:
-        # the generation call is the big one — give it a long read timeout (override EVAC_GEN_TIMEOUT)
         llm, model_label = select_llm(max_tokens=16384,
                                       timeout=float(os.getenv("EVAC_GEN_TIMEOUT", "600")))
 
-    # ---- computed, deterministic: occupancy + travel distance + reachability --------------------
     grounded = ground_spaces(summary, classified, jurisdiction=jurisdiction)
     exits = _resolve_exits(summary, classified, grounded)
     stairs = summary.get("stairs", [])
     storeys = summary.get("storeys", [])
 
-    # "Exit 1", "Exit 2" … — what the model, the app and the record all call the exits by
     names = exit_names(exits)
 
     building = _building_block(summary, grounded, jurisdiction)
     degraded = _degraded_cases(summary, classified, grounded, jurisdiction, names)
 
-    # ---- the single API call: which scenarios are worth generating, and their write-up ----------
     reg_refs = _reg_refs(jurisdiction)
     facts = _facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded, names)
     prompt = f"{_SYSTEM}\n\n=== COMPUTED BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{_TASK}"
@@ -605,17 +518,10 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
         "not_assessed": grounded["not_assessed"],
     }
 
-    # Deterministic post-pass: spread each scenario's occupants over the rooms and give them a goal.
-    # It needs both `spaces` and the AI's scenarios, so it can only run on the assembled object.
     return attach_occupancy(obj)
 
 
 def build_full_scenario(ifc_path, jurisdiction="england", use_llm=True, gate=None):
-    """Parse, gate, classify, compute egress, then produce the scenario set in one generation call.
-
-    ``gate`` may be a precomputed regulation_gate() result (the frontend runs the gate first to decide
-    whether to generate at all); if None it is computed here and embedded in the object.
-    """
     summary = parser_summary(ifc_path)
     summary["source_ifc"] = os.path.basename(ifc_path)
     if gate is None:

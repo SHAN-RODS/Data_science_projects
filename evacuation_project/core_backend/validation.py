@@ -5,15 +5,17 @@ from collections import defaultdict
 from jsonschema import Draft202012Validator
 
 from core_backend.exit_names import exit_names, unknown_exit_references
-from core_backend.scenario_schema import SCENARIO_SCHEMA
+from core_backend.scenario_schema import scenario_schema
+import sys
+import json
+import os
+from core_backend.scenario_generation_llm import build_full_scenario
+from core_backend.sample_paths import default_ifc
 
 EXIT_CAPACITY_PERSONS_PER_M = 200
 
 _NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 
-# The simulation block is the one place the model originates numbers rather than quoting computed ones,
-# so it is range-checked instead of fact-checked. These envelopes are deliberately wide — they exist to
-# catch a value that is not physically sensible, not to second-guess the engineering judgement.
 SPEED_RANGE_MS = (0.5, 2.0)
 SHOULDER_RANGE_M = (0.30, 0.70)
 PRE_MOVEMENT_RANGE_S = (0.0, 1800.0)
@@ -46,9 +48,6 @@ def _allowed_floats(obj):
         add(len(c.get("exits_available", [])))
         add(len(c.get("exits_discounted", [])))
 
-        # The simulation parameters are the model's own (range-checked below, not derived). A narrative
-        # that quotes them back is quoting itself consistently, so they belong in the allowed set --
-        # otherwise every scenario would report its own pre-movement time as an ungrounded number.
         sim = scn.get("simulation") or {}
         add(sim.get("end_time_s"))
         pre = sim.get("pre_movement") or {}
@@ -62,8 +61,6 @@ def _allowed_floats(obj):
         for m in sim.get("occupancy_multipliers") or []:
             add(m.get("multiplier"))
 
-    # Degraded-case figures are computed the same way as the base case and handed to the model, so a
-    # narrative quoting them is grounded — without this they would read as invented.
     for case in obj.get("degraded_cases", []):
         for row in case.get("per_storey", []):
             add(row.get("occupants"))
@@ -103,17 +100,13 @@ def _scenario_text(scn, id_tokens):
     for r in scn.get("routes", []) or []:
         parts += [r.get("from_area", ""), r.get("via", ""), r.get("to_exit", ""), r.get("note", "")]
     text = " ".join(str(p) for p in parts)
-    # longest first, so stripping "Exit 1" cannot leave the "3" of an "Exit 13" behind
     for token in sorted((t for t in id_tokens if t), key=len, reverse=True):
         text = text.replace(token, " ")
     return text
 
 
 def number_factcheck(obj):
-    """Return the list of narrative numbers that do not trace to the structured record."""
     allowed = _allowed_floats(obj)
-    # exit names carry a number ("Exit 13"), so they are stripped out with the ids before the scan —
-    # the name is a label, not a quantity the narrative is claiming
     id_tokens = ({e.get("id") for e in obj["exits"]} | {s.get("guid") for s in obj["spaces"]}
                  | set(exit_names(obj["exits"]).values()))
     ungrounded = []
@@ -133,12 +126,6 @@ def _in_range(value, bounds):
 
 
 def simulation_parameter_issues(obj):
-    """Range/consistency problems in the AI-chosen simulation parameters.
-
-    These are the only numbers in the object the model originates, so ``number_factcheck`` cannot
-    ground them against anything. This is the substitute: a wide physical envelope, plus the rule that
-    every one of them must carry a written basis.
-    """
     issues = []
     for scn in obj.get("scenarios", []):
         sid = scn.get("id")
@@ -192,11 +179,6 @@ def simulation_parameter_issues(obj):
 
 
 def placement_issues(obj):
-    """Whether every occupant this study asks for can actually be placed and given a goal.
-
-    The allocation is recomputed here rather than read from ``scenario["occupancy"]``: recomputing is
-    what makes this a check, and it also catches a stored block that has gone stale or been hand-edited.
-    """
     from core_backend.occupant_placement import scenario_occupancy
 
     space_by_guid = {s["guid"]: s for s in obj.get("spaces", [])}
@@ -214,7 +196,6 @@ def placement_issues(obj):
                                     f"occupant(s) but the allocation recomputes to {placed} — the "
                                     f"block is stale or was edited by hand"})
 
-        # the allocation itself must conserve people, whether or not they can all be seeded
         if target and placed + missing + unallocated != target:
             issues.append({"scenario": sid, "field": "occupants_total",
                            "issue": f"allocation accounts for {placed + missing + unallocated} of "
@@ -224,8 +205,7 @@ def placement_issues(obj):
                            "issue": f"{missing} of {target} occupant(s) sit in {len(unplaced)} "
                                     f"room(s) with no traced egress path and cannot be simulated",
                            "rooms": sorted(unplaced)[:5]})
-        # the AI sets occupants_total; its own multipliers set what the rooms hold. When the first
-        # exceeds the second, the difference has nowhere to go that would not overfill a room.
+
         if unallocated:
             capacity = target - unallocated
             issues.append({"scenario": sid, "field": "occupancy.unallocated_total",
@@ -233,8 +213,7 @@ def placement_issues(obj):
                                     f"multipliers leave rooms holding only {capacity} — "
                                     f"{unallocated} occupant(s) could not be allocated without "
                                     f"putting rooms over their computed load"})
-        # reachability comes from the geodesic engine, nearest_exit from the egress graph -- a room can
-        # be measured as reachable yet have no exit id to aim its occupants at
+
         goalless = sorted(g for g in allocation if not space_by_guid[g].get("nearest_exit"))
         if goalless:
             issues.append({"scenario": sid, "field": "behavior",
@@ -244,7 +223,7 @@ def placement_issues(obj):
 
 
 def validate(obj):
-    validator = Draft202012Validator(SCENARIO_SCHEMA)
+    validator = Draft202012Validator(scenario_schema)
     schema_errors = [f"{'/'.join(str(p) for p in e.path)}: {e.message}"
                      for e in validator.iter_errors(obj)]
 
@@ -266,11 +245,8 @@ def validate(obj):
 
     ungrounded = number_factcheck(obj)
 
-    # the AI refers to exits by name, so a name it invented would close nothing and go unnoticed
     unknown_exits = unknown_exit_references(obj)
 
-    # Objects generated before the simulation block existed carry no parameters to check; report the
-    # two invariants as None rather than failing them.
     has_sim = any(scn.get("simulation") for scn in obj["scenarios"])
     sim_issues = simulation_parameter_issues(obj) if has_sim else []
     place_issues = placement_issues(obj) if has_sim else []
@@ -301,17 +277,12 @@ def validate(obj):
 
 
 if __name__ == "__main__":
-    import sys
-    import json
-    import os
 
     json_args = [a for a in sys.argv[1:] if a.endswith(".json")]
     if json_args:
         with open(json_args[0], "r", encoding="utf-8") as f:
             obj = json.load(f)
     else:
-        from core_backend.scenario_generation_llm import build_full_scenario
-        from core_backend.sample_paths import default_ifc
         obj = build_full_scenario(default_ifc(), jurisdiction="england")
         scratch = os.path.join(os.environ.get("TEMP", "."), "evac_scenario.json")
         with open(scratch, "w", encoding="utf-8") as f:

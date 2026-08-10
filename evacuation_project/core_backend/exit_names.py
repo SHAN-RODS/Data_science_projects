@@ -31,32 +31,23 @@ def _plan_order(exit_item):
 
 
 def exit_names(exits):
-    """``{global_id: "Exit 1"}`` for a list of final-exit dicts, numbered across the plan."""
     return {e["id"]: f"{EXIT_PREFIX} {n}"
             for n, e in enumerate(sorted(exits, key=_plan_order), start=1)}
 
 
 def named(exit_id, names):
-    """The plain name for one exit id, falling back to the id when it is not a known exit."""
     if exit_id is None:
         return None
     return names.get(exit_id, exit_id)
 
 
 def resolve_exit_ids(tokens, names):
-    """Turn what the model wrote (``["Exit 1", "Exit 3"]``) back into GlobalIds.
-
-    Accepts a GlobalId straight through, so an object generated before exits had names — and the
-    tests, which use short ids — still resolve. A token that matches no exit is passed through
-    unchanged rather than dropped: a discounted exit that quietly disappeared would read as open in
-    the record, which is the one failure mode worth avoiding here.
-    """
     by_name = {name.casefold(): exit_id for exit_id, name in names.items()}
     resolved = []
     for token in tokens or []:
         if not isinstance(token, str):
             continue
-        if token in names:                                   # already a GlobalId
+        if token in names:                                  
             resolved.append(token)
             continue
         hit = by_name.get(token.strip().casefold())
@@ -69,16 +60,8 @@ def resolve_exit_ids(tokens, names):
 
 
 def name_exit_ids(value, names):
-    """Rewrite any exit GlobalId appearing in prose as its name, walking strings/lists/dicts.
-
-    The model is only shown names, so freshly generated prose has no GlobalId in it. This is the
-    belt-and-braces pass: it also cleans up scenarios generated before the names existed, which are
-    re-opened and re-exported without another API call.
-    """
     if isinstance(value, str):
         for exit_id, name in sorted(names.items(), key=lambda kv: len(kv[0]), reverse=True):
-            # "exit 3uMBEv…" already reads as a sentence, so the word goes with the id — otherwise
-            # the substitution leaves "Exit Exit 3" behind
             value = re.sub(rf"(?i)\bexit\s+{re.escape(exit_id)}", name, value)
             value = value.replace(exit_id, name)
         return value
@@ -94,26 +77,18 @@ def _conditions_ids(scenario, field):
     ids = conditions.get(f"{field}_ifc_ids")
     if ids is not None:
         return list(ids)
-    # objects written before the names existed carry the GlobalIds in the plain field
     return list(conditions.get(field) or [])
 
 
 def discounted_exit_ids(scenario):
-    """The GlobalIds this scenario closes, whichever form its conditions were written in."""
     return _conditions_ids(scenario, "exits_discounted")
 
 
 def available_exit_ids(scenario):
-    """The GlobalIds this scenario keeps open, whichever form its conditions were written in."""
     return _conditions_ids(scenario, "exits_available")
 
 
 def unknown_exit_references(obj):
-    """Exit names/ids a scenario refers to that are not final exits of this building.
-
-    The names are the AI's only handle on an exit, so a name it invents would otherwise close nothing
-    and be invisible in the record. Reported per scenario rather than corrected.
-    """
     names = exit_names(obj.get("exits", []))
     known = set(names) | set(names.values())
     unknown = []

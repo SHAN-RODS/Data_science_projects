@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from core_backend.ifc_parser import parser_summary
+from core_backend.sample_paths import resolve_ifc
 
 rules_file = {
     "england":"eng_reg.json",
@@ -16,8 +17,6 @@ rules_file = {
 def load_regs(jurisdiction="england"):
     jurisdiction = jurisdiction.lower()
     filename = rules_file.get(jurisdiction)
-    # if filename is None:
-    #     raise ValueError(f"Unknown jurisdiction: {jurisdiction}")
     directory = os.path.dirname(os.path.abspath(__file__))
     json_path = os.path.join(directory, filename)
     with open(json_path, "r", encoding="utf-8") as f:
@@ -27,7 +26,6 @@ def load_regs(jurisdiction="england"):
     for rule in building_data.get("regulations", [])
 }
     return regulations_by_id
-
 
 def flag(rule, element, element_type, attribute, issue, requires_manual_review=False):
     return {
@@ -67,26 +65,9 @@ def distance_m(pos_a, pos_b):
         return None
     return sum((a - b) ** 2 for a, b in zip(pos_a, pos_b)) ** 0.5
 
-
-# --- Annotation layer (reframed) ---------------------------------------------------------------
-#
-# The legacy checkers below emit a flag only when an element *violates* a threshold, and silently
-# skip elements whose attribute is missing. The pivot needs the opposite: a non-verdict reference
-# layer that reports the *measured value + applicable limit + a flag* for every measurable element
-# (whether it meets the limit or not), and surfaces missing data explicitly. The scenario generator
-# may cite these notes; it never treats them as a compliance verdict. A below-limit measurement is
-# flagged "requires_manual_review", never "non-compliant" -- this tool does not issue verdicts.
-
 _AREA_UNITS = ("sqm", "m2", "m²")
 
-
 def _rule_kind(rule):
-    """Classify a jurisdiction rule into a measurable annotation kind, or None to skip.
-
-    Dispatch on ``ifc_element`` + ``ifc_attribute_involved`` (reliable) rather than ``applies_to``,
-    which is mislabelled in several of the jurisdiction JSONs (e.g. storey-height rules tagged
-    ``applies_to: "doors"``). ``ifc_element`` may be a string or a list.
-    """
     element = rule.get("ifc_element") or ""
     if isinstance(element, list):
         element = " ".join(element)
@@ -116,7 +97,6 @@ def _note(rule, element, element_type, attribute, measured, limit, meets):
         "attribute": attribute,
         "measured": measured,
         "limit": limit,
-        # non-verdict: meets the reference limit, or a reviewer should check it -- never "violation"
         "flag": "within_limit" if meets else "requires_manual_review",
     }
 
@@ -134,11 +114,6 @@ def _missing(rule, element, element_type, attribute):
 
 
 def annotate(summary, jurisdiction="england"):
-    """Produce non-verdict reference notes + a not_assessed list for the measurable egress elements.
-
-    Returns ``{"regulation_notes": [...], "not_assessed": [...]}``. Works across the jurisdiction
-    JSONs by dispatching on each rule's ``applies_to`` + ``unit`` rather than hardcoded IDs.
-    """
     regs = load_regs(jurisdiction)
     notes, not_assessed = [], []
 
@@ -188,12 +163,6 @@ def annotate(summary, jurisdiction="england"):
 
 
 def summarize_annotations(annotation_result):
-    """Collapse the per-element notes into a per-regulation summary + the flagged exceptions.
-
-    The full within-limit list is high volume and low signal (one row per compliant door/window);
-    this keeps the traceable counts + measured range and lists only the requires_manual_review items
-    in full. Non-verdict throughout.
-    """
     notes = annotation_result.get("regulation_notes", [])
     groups = {}
     for note in notes:
@@ -221,7 +190,6 @@ def summarize_annotations(annotation_result):
 
 
 def annotate_and_summarize(summary, jurisdiction="england"):
-    """Annotate the model then return the compact building-level regulation block."""
     result = annotate(summary, jurisdiction=jurisdiction)
     summarised = summarize_annotations(result)
     return {
@@ -232,9 +200,7 @@ def annotate_and_summarize(summary, jurisdiction="england"):
         "not_assessed": result["not_assessed"],
     }
 
-
 # England — Approved Document B Volume 1 
-
 def door_width(doors, regs):
     flags = []
     rule = regs.get("ENG-R1")
@@ -267,7 +233,6 @@ def exits(emergency_exits, regs):
             f". Reference: {rule['doc_reference']}."
         ))
     return flags
-
 
 def possible_escape_route(emergency_exits, regs):
     flags = []
@@ -307,7 +272,6 @@ def stair_width(stairs, regs):
                 f"stairs and common stairs. Ref: {rule['doc_reference']}."
             ))
     return flags
-
 
 def window_area(windows, regs, rule_id="ENG-R6"):
     flags = []
@@ -541,7 +505,6 @@ def basement_manual_review(storeys, rule):
         ))
     return flags
 
-
 def passenger_lift_manual_review(storeys, elevators, rule):
     flags = []
     if not elevators:
@@ -619,9 +582,7 @@ def wall_proximity_manual_review(walls, rule):
         ))
     return flags
 
-
 # Wales — Approved Document B Volume 2
-
 def check_wales(summary, regs):
     flags = []
     storeys = summary.get("storeys", [])
@@ -669,7 +630,6 @@ def check_scotland(summary, regs):
     stairs = summary.get("stairs", [])
     walls = summary.get("walls", [])
 
-    
     flags += storey_height_provision_check(storeys, regs["SCO-R1"], len(summary["emergency_exits"]), "escape route")
     flags += protected_stairway_manual_review(storeys, walls, regs["SCO-R2"])
     flags += storey_height_provision_check(storeys, regs["SCO-R3"], len(summary["emergency_exits"]), "alternative exit route")
@@ -681,7 +641,6 @@ def check_scotland(summary, regs):
     flags += wall_proximity_manual_review(walls, regs["SCO-R9"])
     flags += external_stair_manual_review(storeys, stairs, regs["SCO-R10"])
     return flags
-
 
 CHECKERS = {
     "england":check_england,
@@ -698,17 +657,7 @@ def check_all_rules(summary, jurisdiction="england"):
         raise ValueError(f"No jurisdiction: {jurisdiction}")
     return checker(summary, regs)
 
-
-# --- Pass/Fail gate ----------------------------------------------------------------------------
-#
-# A visible, blocking validation step (supervisor requirement): the building is checked against the
-# selected regulation BEFORE any scenario is generated. Any hard threshold violation (a measurable
-# attribute that breaches its limit) FAILS the building and blocks generation. "Manual review" flags
-# ("cannot check from the IFC alone") are surfaced but do NOT block — they are uncertainty, not
-# violations, and would otherwise fail almost every model on missing fire-ratings etc.
-
 def _slim_flag(f):
-    """Flatten a raw checker flag into a compact, JSON/UI-friendly row."""
     rule = f.get("rule", {}) or {}
     return {
         "regulation_id": rule.get("unique_id"),
@@ -722,15 +671,7 @@ def _slim_flag(f):
         "issue": f.get("issue"),
     }
 
-
 def regulation_gate(summary, jurisdiction="england"):
-    """Deterministic PASS/FAIL of the building against the selected regulation.
-
-    Returns ``{jurisdiction, passed, violations, manual_review, basis}``. ``passed`` is True only when
-    there is no hard violation. ``violations`` are threshold breaches (blocking); ``manual_review`` are
-    items the IFC cannot decide (non-blocking, shown for transparency). This is the gate the frontend
-    uses to allow or block scenario generation.
-    """
     flags = check_all_rules(summary, jurisdiction)
     violations = [_slim_flag(f) for f in flags if not f.get("requires_manual_review")]
     manual_review = [_slim_flag(f) for f in flags if f.get("requires_manual_review")]
@@ -743,13 +684,10 @@ def regulation_gate(summary, jurisdiction="england"):
                   "generation; manual-review items are surfaced but non-blocking"),
     }
 
-
 if __name__ == "__main__":
-    from core_backend.sample_paths import resolve_ifc
 
     summary = parser_summary(resolve_ifc(sys.argv))
 
-    # Pass/Fail gate (the blocking validation step) — measured against each jurisdiction.
     for jurisdiction in ["england", "wales", "northern_ireland", "scotland"]:
         gate = regulation_gate(summary, jurisdiction=jurisdiction)
         verdict = "PASS" if gate["passed"] else "FAIL"

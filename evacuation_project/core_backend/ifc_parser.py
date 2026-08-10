@@ -70,7 +70,6 @@ def _footprint_polygon(verts, faces):
     for i in range(0, len(faces), 3):
         a, b, c = faces[i] * 3, faces[i + 1] * 3, faces[i + 2] * 3
         pa, pb, pc = (verts[a], verts[a + 1]), (verts[b], verts[b + 1]), (verts[c], verts[c + 1])
-        # 2x triangle area in XY; skip near-degenerate (vertical) faces
         if abs((pb[0] - pa[0]) * (pc[1] - pa[1]) - (pc[0] - pa[0]) * (pb[1] - pa[1])) < 1e-6:
             continue
         tris.append(Polygon((pa, pb, pc)))
@@ -215,10 +214,8 @@ def _element_bbox(element, settings):
     xs, ys, zs = verts[0::3], verts[1::3], verts[2::3]
     return (max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
 
-
-_STAIR_MIN_RISE_M = 1.0
-_STAIR_MIN_WIDTH_M = 0.6
-
+stair_min_rise_m = 1.0
+stair_min_width_m = 0.6
 
 def stairs(model, scale, settings):
     results = []
@@ -243,8 +240,8 @@ def stairs(model, scale, settings):
             width_m, width_source = min(own[0], own[1]), "stair_geometry"
 
         is_egress_stair = bool(flights) or (
-            own is not None and own[2] > _STAIR_MIN_RISE_M
-            and width_m is not None and width_m >= _STAIR_MIN_WIDTH_M
+            own is not None and own[2] > stair_min_rise_m
+            and width_m is not None and width_m >= stair_min_width_m
         )
         if not is_egress_stair:
             continue
@@ -254,7 +251,6 @@ def stairs(model, scale, settings):
             "name": stair.Name or "Normal Staircase",
             "width": width_m,
             "width_source": width_source,
-            # the only link back to this stair's rise/going in stair_flights()
             "flight_ids": [f.GlobalId for f in flights],
             "position": get_position(stair, scale)
         })
@@ -388,7 +384,6 @@ def connected_elements(model):
         })
     return elements
 
-
 def transport_elements(model, scale):
     results = []
     for element in model.by_type("IfcTransportElement"):
@@ -429,7 +424,6 @@ def storeys(model, scale):
 
     ground_reference_found = entrance_elevation is not None
     if entrance_elevation is None:
-        # nothing tagged as the entrance level, so just use the lowest storey instead
         elevations = [s.Elevation for s in storeys_list if s.Elevation is not None]
         entrance_elevation = min(elevations) if elevations else 0.0
 
@@ -485,24 +479,19 @@ def storey_levels(model, scale):
 # adopted only when it measurably improves door-to-room agreement, so a well-formed model is left
 # untouched -- which is what makes it safe to run on every file.
 
-FRAME_OK_M = 0.5            # a storey whose doors already sit this close to their rooms is not touched
-FRAME_ADOPT_M = 1.5         # ...and a fitted frame must land doors at least this close to be believed
-FRAME_GAIN = 10.0           # ...and must improve the median gap by at least this factor
-FRAME_MIN_PAIRS = 5         # fewer correspondences than this cannot constrain a fit
-FRAME_INLIER_M = 0.5        # a door within this of a room it bounds counts as agreeing with it
-FRAME_SWEEP_DEG = 1.0       # coarse global rotation sweep: ICP alone lands in local minima
-FRAME_TRIM_M = 2.0          # ICP ignores pairs beyond this -- hosting-wall over-linking, not slop
-FRAME_ICP_MAX_STEPS = 60    # ICP converges in ~25 steps on a clean fit; the cap is a safety stop
-FRAME_ICP_SHIFT_M = 1e-4    # stop once the fitted transform stops moving
+FRAME_OK_M = 0.5            
+FRAME_ADOPT_M = 1.5         
+FRAME_GAIN = 10.0           
+FRAME_MIN_PAIRS = 5         
+FRAME_INLIER_M = 0.5        
+FRAME_SWEEP_DEG = 1.0       
+FRAME_TRIM_M = 2.0          
+FRAME_ICP_MAX_STEPS = 60    
+FRAME_ICP_SHIFT_M = 1e-4    
 FRAME_ICP_ANGLE_RAD = 1e-5
 
 
 def _rigid_2d(pairs):
-    """Least-squares rotation+translation taking each source point onto its target, or None.
-
-    Closed-form 2-D Kabsch/Umeyama with no scaling (unit_scale already put everything in metres).
-    ``pairs`` is [((sx, sy), (tx, ty)), ...]; the result is (cos, sin, dx, dy).
-    """
     if not pairs:
         return None
     n = len(pairs)
@@ -534,7 +523,6 @@ def _invert_2d(transform):
 
 
 def _affine_matrix(transform):
-    """shapely.affinity.affine_transform coefficients for a (cos, sin, dx, dy) rigid transform."""
     c, s, dx, dy = transform
     return [c, -s, s, c, dx, dy]
 
@@ -548,11 +536,6 @@ def _median(values):
 
 
 def _frame_gaps(entries, transform=None):
-    """Distance from each door position to the outline of the room it bounds (0 when inside).
-
-    Distance is invariant under a rigid transform, so this moves the *door point* by the inverse
-    rather than rebuilding every polygon -- the rotation sweep evaluates hundreds of candidates.
-    """
     from shapely.geometry import Point
 
     inverse = _invert_2d(transform) if transform is not None else None
@@ -564,20 +547,11 @@ def _frame_gaps(entries, transform=None):
 
 
 def _frame_agreement(entries, transform=None):
-    """(doors landing on the room they bound, median gap) -- higher then lower is better."""
     gaps = _frame_gaps(entries, transform)
     return sum(1 for g in gaps if g <= FRAME_INLIER_M), _median(gaps)
 
 
 def _sweep_rotation(entries):
-    """Best rigid transform over a global rotation sweep.
-
-    ICP on its own converges to whichever local minimum the seed falls in; on a real model the
-    hosting-wall rule gives each door several rooms it does not really bound, and those outliers pull
-    the seed far enough to miss the true angle. There is only one rotational degree of freedom, so it
-    is cheaper to sweep it exhaustively. The translation for each angle is the *median* per-pair
-    offset, which ignores those same outliers.
-    """
     centroids = [(p.centroid.x, p.centroid.y) for p, _ in entries]
     targets = [d for _, d in entries]
     best = None
@@ -595,12 +569,6 @@ def _sweep_rotation(entries):
 
 
 def _trimmed_icp(entries, transform):
-    """Refine a transform against the room outlines, ignoring pairs it cannot explain.
-
-    Trimming is what makes this survive ``door_space_links``: a door inherits every space its host
-    wall bounds, so a long wall attributes it to rooms metres away. Those pairs are real topology but
-    useless geometry, and fitting to them drags the answer off.
-    """
     from shapely.geometry import Point
     from shapely.ops import nearest_points
 
@@ -629,12 +597,6 @@ def _trimmed_icp(entries, transform):
 
 
 def reconcile_space_frame(spaces, doors, links, storeys):
-    """Move space geometry onto the door/placement frame on storeys where the two disagree.
-
-    Rewrites ``footprint`` and ``centroid`` in place and returns a per-storey report. A storey whose
-    doors already sit within ``FRAME_OK_M`` of the rooms they bound is never touched, so this is a
-    no-op on a well-formed model.
-    """
     try:
         from shapely.affinity import affine_transform
     except Exception:
@@ -650,7 +612,6 @@ def reconcile_space_frame(spaces, doors, links, storeys):
         if storey_id is not None:
             by_storey[storey_id].append(space)
 
-    # each (door, room it bounds) pair is one correspondence, grouped by the room's storey
     entries_by_storey = {}
     for storey_id in by_storey:
         entries = []
@@ -686,10 +647,6 @@ def reconcile_space_frame(spaces, doors, links, storeys):
             continue
         needs.append(storey_id)
 
-    # Candidate transforms: one fitted per mis-framed storey, plus one fitted over all of them
-    # pooled. A storey usually loses its placement because the *model* lost it, so the pooled fit
-    # sees several times the correspondences and is often the better answer for a thin storey --
-    # but it is offered as a candidate and scored, never assumed.
     candidates = []
     for storey_id in needs:
         seed = _sweep_rotation(entries_by_storey[storey_id])
@@ -745,11 +702,10 @@ def reconcile_space_frame(spaces, doors, links, storeys):
     return list(rows.values())
 
 
-OVERLAY_COVERED_SHARE = 0.9   # a space this far inside another one is an overlay, not a room
+OVERLAY_COVERED_SHARE = 0.9   
 
 
 def _is_overlay_of_a_connected_room(space, connected):
-    """True when this space sits (almost) wholly inside a room that already has a door."""
     area = space["footprint"].area
     if area <= 0:
         return True
@@ -763,18 +719,6 @@ def _is_overlay_of_a_connected_room(space, connected):
 
 
 def augment_door_space_links(links, spaces, doors, levels, tolerance_m=0.3):
-    """Link doors to rooms geometrically, but only for rooms topology left with no door at all.
-
-    ``door_space_links`` is built from IfcRelSpaceBoundary plus the door's hosting wall. A space
-    carrying neither -- whole-apartment zones are the common case -- ends up with no door, so the
-    egress graph cannot route out of it however good the geometry is. Restricting this to rooms with
-    *zero* links keeps connectivity door-driven and stops it inflating a well-formed model's graph.
-
-    Overlay spaces are skipped. An exporter also emits clearance markers -- wheelchair turning circles
-    and the like -- that sit wholly inside a real room; they already inherit that room's connectivity,
-    so linking them adds graph edges without adding anywhere anyone needs to escape from. An apartment
-    zone *contains* its rooms rather than sitting inside one, so it is kept.
-    """
     try:
         from shapely.geometry import Point
     except Exception:
@@ -822,8 +766,6 @@ def parser_summary(ifc_path):
     all_doors = doors(model, scale)
     all_transport = transport_elements(model, scale)
 
-    # Spaces get their coordinates from geometry and doors from placements; reconcile the two before
-    # anything downstream reads a footprint, then give door-less rooms a geometric link.
     all_spaces = space_extract(model, scale, world_settings, levels)
     all_storeys = storeys(model, scale)
     links = door_space_links(model)
@@ -845,8 +787,6 @@ def parser_summary(ifc_path):
         #"fire_suppression_terminals": fire_terminals(model),
         "space_boundaries": space_boundary(model),
         "door_space_links": links,
-        # how the space geometry was reconciled against the door frame, per storey -- surfaced so a
-        # corrected model is never silently corrected
         "space_frame": space_frame,
         "door_links_added_geometrically": links_added,
         "connected_elements": connected_elements(model),
