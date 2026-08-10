@@ -91,7 +91,7 @@ def is_grounded(value, allowed):
     return False
 
 
-def _scenario_text(scn, id_tokens):
+def scenario_text(scn, id_tokens):
     parts = [scn.get("narrative", ""), scn.get("title", "")]
     parts += scn.get("occupant_distribution", []) or []
     parts += scn.get("assumptions", []) or []
@@ -111,7 +111,7 @@ def number_factcheck(obj):
                  | set(exit_names(obj["exits"]).values()))
     ungrounded = []
     for scn in obj["scenarios"]:
-        for token in NUM_RE.findall(_scenario_text(scn, id_tokens)):
+        for token in NUM_RE.findall(scenario_text(scn, id_tokens)):
             try:
                 value = float(token)
             except ValueError:
@@ -120,7 +120,7 @@ def number_factcheck(obj):
                 ungrounded.append({"scenario": scn["id"], "value": token})
     return ungrounded
 
-def _in_range(value, bounds):
+def in_range(value, bounds):
     lo, hi = bounds
     return isinstance(value, (int, float)) and lo <= value <= hi
 
@@ -139,12 +139,12 @@ def simulation_parameter_issues(obj):
             issues.append({"scenario": sid, "field": "movement_model",
                            "issue": f"{sim.get('movement_model')!r} is not one of "
                                     f"{sorted(ALLOWED_MOVEMENT_MODELS)}"})
-        if sim.get("end_time_s") is not None and not _in_range(sim["end_time_s"], END_TIME_RANGE_S):
+        if sim.get("end_time_s") is not None and not in_range(sim["end_time_s"], END_TIME_RANGE_S):
             issues.append({"scenario": sid, "field": "end_time_s",
                            "issue": f"{sim['end_time_s']} s outside {END_TIME_RANGE_S}"})
 
         pre = sim.get("pre_movement") or {}
-        if not _in_range(pre.get("mean_s"), PRE_MOVEMENT_RANGE_S):
+        if not in_range(pre.get("mean_s"), PRE_MOVEMENT_RANGE_S):
             issues.append({"scenario": sid, "field": "pre_movement.mean_s",
                            "issue": f"{pre.get('mean_s')} s outside {PRE_MOVEMENT_RANGE_S}"})
         if str(pre.get("distribution", "")).strip().lower() not in ALLOWED_DISTRIBUTIONS:
@@ -158,10 +158,10 @@ def simulation_parameter_issues(obj):
             issues.append({"scenario": sid, "field": "profiles", "issue": "no occupant profiles given"})
         for p in profiles:
             name = p.get("name")
-            if not _in_range(p.get("speed_ms_mean"), SPEED_RANGE_MS):
+            if not in_range(p.get("speed_ms_mean"), SPEED_RANGE_MS):
                 issues.append({"scenario": sid, "field": f"profiles[{name}].speed_ms_mean",
                                "issue": f"{p.get('speed_ms_mean')} m/s outside {SPEED_RANGE_MS}"})
-            if not _in_range(p.get("shoulder_width_m"), SHOULDER_RANGE_M):
+            if not in_range(p.get("shoulder_width_m"), SHOULDER_RANGE_M):
                 issues.append({"scenario": sid, "field": f"profiles[{name}].shoulder_width_m",
                                "issue": f"{p.get('shoulder_width_m')} m outside {SHOULDER_RANGE_M}"})
             if str(p.get("speed_distribution", "")).strip().lower() not in ALLOWED_DISTRIBUTIONS:
@@ -261,8 +261,7 @@ def validate(obj):
             "occupants_within_exit_capacity": within_capacity,
             "travel_distance_non_negative": dist_ok,
             "every_exit_named_exists": not unknown_exits,
-            # simulation-input checks; None when the object carries no simulation block at all
-            "simulation_parameters_in_range": (not sim_issues) if has_sim else None,
+            "simulation_parametersin_range": (not sim_issues) if has_sim else None,
             "every_occupant_placed_with_a_goal": (not place_issues) if has_sim else None,
         },
         "unknown_exit_references": unknown_exits,

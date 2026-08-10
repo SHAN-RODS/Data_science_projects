@@ -58,7 +58,7 @@ def is_grounded(value, allowed):
     return False
 
 
-def _scenario_text(scn, id_tokens):
+def scenario_text(scn, id_tokens):
     parts = [scn.get("narrative", ""), scn.get("title", "")]
     parts += scn.get("occupant_distribution", []) or []
     parts += scn.get("assumptions", []) or []
@@ -79,7 +79,7 @@ def number_factcheck(obj):
     id_tokens = {e.get("id") for e in obj["exits"]} | {s.get("guid") for s in obj["spaces"]}
     ungrounded = []
     for scn in obj["scenarios"]:
-        for token in NUM_RE.findall(_scenario_text(scn, id_tokens)):
+        for token in NUM_RE.findall(scenario_text(scn, id_tokens)):
             try:
                 value = float(token)
             except ValueError:

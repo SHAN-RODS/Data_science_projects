@@ -67,3 +67,12 @@ changed slim_flag from slim_flag in uk_regulation_checking.py
 changed NUM_RE from _NUM_RE in validation.py
 changed allowed_floats from _allowed_floats in validation.py 
 changed is_grounded from _is_grounded in validation.py
+
+#batch- 5
+changed scenario_text from _scenario_text in validation.py
+changed in_range from _in_range in validation.py
+changed ifc_elements from _ifc_elements in export_results.py
+changed exit_token from _exit_token_re in exit_names.py
+changed plan_order from _plan_order in exit_names.py
+changed conditions_ids from _conditions in exit_names.py 
+changed caption in app.py 

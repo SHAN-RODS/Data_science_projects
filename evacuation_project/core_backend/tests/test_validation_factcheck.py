@@ -56,7 +56,7 @@ def test_simulation_invariants_are_none_without_a_simulation_block():
     """Objects generated before the simulation block existed must not fail the new checks."""
     obj = validate(_minimal_object("Evacuate 10 occupants."))
     inv = obj["validation"]["invariants_checked"]
-    assert inv["simulation_parameters_in_range"] is None
+    assert inv["simulation_parametersin_range"] is None
     assert inv["every_occupant_placed_with_a_goal"] is None
 
 
@@ -90,7 +90,7 @@ def _fields(obj):
 
 def test_plausible_parameters_pass_and_are_not_called_ungrounded():
     obj = validate(_with_simulation())
-    assert obj["validation"]["invariants_checked"]["simulation_parameters_in_range"] is True
+    assert obj["validation"]["invariants_checked"]["simulation_parametersin_range"] is True
     assert obj["validation"]["simulation_parameter_issues"] == []
     # the AI's own numbers are admitted to the allowed set, so quoting them back is not "invented"
     quoted = number_factcheck(_with_simulation())

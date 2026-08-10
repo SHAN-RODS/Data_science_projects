@@ -465,20 +465,6 @@ def storey_levels(model, scale):
         for s in model.by_type("IfcBuildingStorey")
     ]
 
-
-# --- space-frame reconciliation --------------------------------------------------------------------
-# Some exporters lose the placement transform on a subset of IfcSpaces: the space geometry comes back
-# in the raw authoring frame while doors, walls and stairs keep correct world placements. The two then
-# disagree by a rigid transform, no door touches any room, and every egress path disappears.
-#
-# ``door_space_links`` states which doors bound which rooms from topology alone (IfcRelSpaceBoundary +
-# hosting wall), independent of any coordinate. That gives correspondences to *solve* the transform
-# from rather than assuming an angle: a global sweep of the single rotational degree of freedom, then
-# trimmed ICP against the room outlines to converge it. No angle or offset is hardcoded, so a model
-# tilted by any amount is handled. It is done per storey (the loss is per-storey in practice) and
-# adopted only when it measurably improves door-to-room agreement, so a well-formed model is left
-# untouched -- which is what makes it safe to run on every file.
-
 FRAME_OK_M = 0.5            
 FRAME_ADOPT_M = 1.5         
 FRAME_GAIN = 10.0           

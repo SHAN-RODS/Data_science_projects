@@ -9,7 +9,7 @@ from core_backend.validation import validate
 from core_backend.scenario_generation_llm import build_full_scenario
 from core_backend.sample_paths import resolve_ifc
 
-def _ifc_elements(obj, scn):
+def ifc_elements(obj, scn):
     names = exit_names(obj.get("exits", []))
     discounted = set(discounted_exit_ids(scn))
     elements = []
@@ -54,7 +54,7 @@ def build_records(obj):
         records.append({
             "unique_id": f"SCN-{number:03d}",
             "description": scn.get("title"),
-            "relevant_ifc_element": _ifc_elements(obj, scn),
+            "relevant_ifc_element": ifc_elements(obj, scn),
             "regulatory_justification": scn.get("regulatory_justification"),
             "ai_explanation": scn.get("ai_explanation"),
             "scenario": {

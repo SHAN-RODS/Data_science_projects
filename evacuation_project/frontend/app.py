@@ -267,13 +267,8 @@ if occupancy.get("unallocated_why"):
 st.divider()
 
 st.subheader("Export")
-st.caption("The deliverable is one JSON: a record per scenario (SCN-001, SCN-002 …) — unique_id, "
-           "description, relevant_ifc_element, regulatory_justification, ai_explanation and the "
-           "scenario itself. Import the **same IFC** into the simulator for the geometry; the record "
-           "supplies what the IFC cannot — which exits are open, and how many occupants evacuate in "
-           "which occupancy state, keyed on the IFC GlobalIds in metres. Exits read as **Exit 1, "
-           "Exit 2 …** throughout; each one still carries its GlobalId beside the name, so the "
-           "simulator has what it needs.")
+st.caption("This will give the scenario results having all the necessary inputs that would be required for taking decisions on evacuation scenarios")
+
 records_json = export_records(obj)
 with st.expander("Preview records JSON before downloading", expanded=True):
     st.json(build_records(obj))

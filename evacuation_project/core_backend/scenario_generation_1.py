@@ -107,7 +107,7 @@ class RegulatoryJustification(BaseModel):
 class ScenarioContent(BaseModel):
     scenario_id: str = Field(description="short id you assign, e.g. 'SCN-001', 'SCN-002'")
     description: str = Field(description="one-line description of the scenario")
-    relevant_ifc_elements: RelevantIfcElements
+    relevantifc_elements: RelevantIfcElements
     regulatory_justification: RegulatoryJustification
     ai_explanation: str = Field(description="short reasoning: why you chose this scenario and what it "
                                              "shows")
@@ -150,7 +150,7 @@ _SYSTEM = (
     "below, and use those recomputed numbers rather than the base-case ones.\n\n"
     "FOR EVERY SCENARIO, fill in:\n"
     "  * scenario_id, description — a short id you assign and a one-line description.\n"
-    "  * relevant_ifc_elements — the space guids / door ids / stair ids / exit ids this scenario "
+    "  * relevantifc_elements — the space guids / door ids / stair ids / exit ids this scenario "
     "actually concerns, all copied verbatim from the facts below. Leave a list empty if none apply.\n"
     "  * fire_scenario — fire_origin (a space name/guid from the facts, or null if this scenario has no "
     "fire), blocked_elements (ids blocked by the fire/smoke, or empty), smoke_condition ('none', "
@@ -446,13 +446,13 @@ def model_block(summary):
 
 
 def assemble_scenario(sc):
-    """CHANGED: now returns the SCN-001 shape (scenario_id / description / relevant_ifc_elements /
+    """CHANGED: now returns the SCN-001 shape (scenario_id / description / relevantifc_elements /
     regulatory_justification / ai_explanation / scenario_inputs) instead of the old
     id/type/title/conditions/routes/bottlenecks/risks/narrative/simulation shape."""
     return {
         "scenario_id": sc.scenario_id,
         "description": sc.description,
-        "relevant_ifc_elements": sc.relevant_ifc_elements.model_dump(),
+        "relevantifc_elements": sc.relevantifc_elements.model_dump(),
         "regulatory_justification": sc.regulatory_justification.model_dump(),
         "ai_explanation": sc.ai_explanation,
         "scenario_inputs": sc.scenario_inputs.model_dump(),

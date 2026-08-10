@@ -83,7 +83,7 @@ def test_records_are_numbered_scn_001_upwards():
     assert [r["unique_id"] for r in recs] == ["SCN-001", "SCN-002"]
 
 
-def test_relevant_ifc_elements_resolve_real_ids():
+def test_relevantifc_elements_resolve_real_ids():
     recs = build_records(_obj())
     blocked = next(r for r in recs if r["unique_id"] == "SCN-002")
     ids = {e["id"] for e in blocked["relevant_ifc_element"]}
@@ -101,7 +101,7 @@ def test_scenario_body_is_nested():
 
 # ---- the record as a simulation input --------------------------------------------------------------
 
-def test_ifc_elements_cover_doors_stairs_and_lifts_with_a_state():
+def testifc_elements_cover_doors_stairs_and_lifts_with_a_state():
     recs = build_records(_obj())
     kinds = {e["id"]: e["kind"] for e in recs[0]["relevant_ifc_element"]}
     assert kinds == {"E1": "final_exit", "E2": "final_exit", "D1": "internal_door",
