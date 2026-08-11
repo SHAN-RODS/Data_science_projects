@@ -16,7 +16,7 @@ The existing system (`core_backend/`) does three things:
    dict (spaces, doors, stairs, windows, walls, slabs, storeys, alarms, connectivity, positions).
 2. **`uk_regulation_checking.py`** — compares each element attribute against hardcoded thresholds in
    the jurisdiction JSON files (England/Wales/NI/Scotland) and emits a flat list of **violation flags**.
-3. **`scenario_generation_llm.py`** — for **each flag**, an LLM writes a 3-sentence explanation.
+3. **`scenario_generation_llm_1.py`** — for **each flag**, an LLM writes a 3-sentence explanation.
 
 ### 1.2 The problem (why we are pivoting)
 What the old system calls a "scenario" is really **one code violation per record** (confirmed by
@@ -132,7 +132,7 @@ flowchart TD
 - **Output:** per-space `{occupant_load, occupant_basis, nearest_exit, approx_travel_distance_m}`.
 
 ### Stage 4 — Scenario generation *(AI 2, new — the headline)*
-- **Module:** rewrite `core_backend/scenario_generation_llm.py` (keep the `select_llm()` +
+- **Module:** rewrite `core_backend/scenario_generation_llm_1.py` (keep the `select_llm()` +
   LangChain plumbing; replace the per-violation prompt/logic).
 - **Input:** the grounded building facts (spaces + use-types + occupant loads + exits + connectivity
   + approx distances) + the regulation thresholds as *reference*.
@@ -228,7 +228,7 @@ discipline; the governing test is *"does the building stay safe when an exit is 
 |---|---|---|
 | `core_backend/ifc_parser.py` | **Keep + extend** | Add space centroids; keep raw space names |
 | `core_backend/uk_regulation_checking.py` | **Reframe** | Becomes an *annotation* layer (measured + limit + flag). Fix silent `continue` on missing data → record `not_assessed` |
-| `core_backend/scenario_generation_llm.py` | **Rewrite** | Keep `select_llm()` + LangChain plumbing; replace per-violation logic with the scenario generator |
+| `core_backend/scenario_generation_llm_1.py` | **Rewrite** | Keep `select_llm()` + LangChain plumbing; replace per-violation logic with the scenario generator |
 | `core_backend/export_results.py` | **Rewrite schema** | From flat per-violation list → whole-building scenario object |
 | `frontend/app.py` | **Rework** | Per-defect cards → whole-building scenario view |
 | `*_reg.json` (eng/wales/ireland/scotland) | **Keep** | Thresholds become reference for the annotation layer |

@@ -9,7 +9,7 @@ from core_backend.exit_names import (available_exit_ids, discounted_exit_ids, ex
                                      name_exit_ids, named, resolve_exit_ids,
                                      unknown_exit_references)
 from core_backend.export_results import build_records
-from core_backend.scenario_generation_llm import (ScenarioContent, assemble_scenario, exits_block,
+from core_backend.scenario_generation_llm_1 import (ScenarioContent, assemble_scenario, exits_block,
                                                   facts_block, spaces_block)
 
 

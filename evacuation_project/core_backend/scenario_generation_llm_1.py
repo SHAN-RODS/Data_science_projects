@@ -478,8 +478,8 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
     building = building_block(summary, grounded, jurisdiction)
     degraded = degraded_cases(summary, classified, grounded, jurisdiction, names)
 
-    reg_refs = reg_refs(jurisdiction)
-    facts = facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded, names)
+    regulation_refs = reg_refs(jurisdiction)
+    facts = facts_block(building, grounded, exits, stairs, storeys, regulation_refs, degraded, names)
     prompt = f"{_SYSTEM}\n\n=== COMPUTED BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{TASK}"
 
     analysis = invoke_structured(llm, prompt)

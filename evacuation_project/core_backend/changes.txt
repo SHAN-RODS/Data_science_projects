@@ -90,3 +90,4 @@ changed frame_agreemenr from _frame_agreement in ifc_parser.py
 changed sweep_rotation from _sweep_rotation in ifc_parser.py
 changed trimmed_icp from _trimmed_icp in ifc_parser.py
 changed footprint_polygon from _footprint_polygon in ifc_parser.py
+

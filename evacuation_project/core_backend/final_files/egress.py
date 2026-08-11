@@ -1,5 +1,5 @@
 #Geometry helpers for egress: the connectivity graph, ground-level final-exit detection and (reference)
-#nearest-exit search. Occupancy and travel distance are now produced by the LLM (scenario_generation_llm),
+#nearest-exit search. Occupancy and travel distance are now produced by the LLM (scenario_generation_llm_1),
 #so this module is pure geometry — build_graph is what the generator consumes.
 
 import math

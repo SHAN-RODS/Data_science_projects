@@ -39,7 +39,7 @@ def inset(poly):
 
 
 class _Field:
-    def _init_(self, walkable, seeds, cell_m=CELL_M):
+    def __init__(self, walkable, seeds, cell_m=CELL_M):
         minx, miny, maxx, maxy = walkable.bounds
         self.minx, self.miny, self.cell = minx, miny, cell_m
         self.nx = int(math.ceil((maxx - minx) / cell_m)) + 1
@@ -180,15 +180,15 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
         for sid in linked:
             st = storey_id(space_by_id[sid])
             doors_on_storey.setdefault(st, []).append(portal)
-            inset = insets.get(sid)
-            if inset is None:
+            room_inset = insets.get(sid)
+            if room_inset is None:
                 continue
             obstacles = [insets[other] for other in room_ids_on_storey.get(st, [])
                          if other not in linked]
-            bridge = connector(portal, pos[0], pos[1], inset, width, obstacles)
+            bridge = connector(portal, pos[0], pos[1], room_inset, width, obstacles)
             if bridge is not None:
                 doors_on_storey[st].append(bridge)
-            elif not portal.intersects(inset):
+            elif not portal.intersects(room_inset):
                 unbridged[st] = unbridged.get(st, 0) + 1
         if stair_sides and non_stair:
             for stair_sid in stair_sides:

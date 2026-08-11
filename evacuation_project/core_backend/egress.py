@@ -41,7 +41,7 @@ def stair_adjacency(spaces, use_type):
         for j in range(i + 1, len(stair_spaces)):
             a, b = stair_spaces[i]["centroid"], stair_spaces[j]["centroid"]
             dz = abs(a[2] - b[2])
-            if 0.1 < dz <= stair_max_dz_m andhorizontal(a, b) <= stair_max_dxy_m:
+            if 0.1 < dz <= stair_max_dz_m and horizontal(a, b) <= stair_max_dxy_m:
                 pairs.append((stair_spaces[i]["id"], stair_spaces[j]["id"]))
     return pairs
 

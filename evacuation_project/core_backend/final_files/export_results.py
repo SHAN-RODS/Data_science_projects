@@ -52,7 +52,7 @@ def export_records(obj):
 
 if __name__ == "__main__":
     import sys
-    from core_backend.scenario_generation_llm import build_full_scenario
+    from core_backend.scenario_generation_llm_1 import build_full_scenario
     from core_backend.validation import validate
     from core_backend.sample_paths import resolve_ifc
 

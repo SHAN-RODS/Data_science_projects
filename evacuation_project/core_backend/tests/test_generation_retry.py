@@ -13,7 +13,7 @@ the last test pins that a model which never complies still fails loudly.
 import pytest
 from pydantic import ValidationError
 
-from core_backend.scenario_generation_llm import BuildingAnalysis, invoke_structured
+from core_backend.scenario_generation_llm_1 import BuildingAnalysis, invoke_structured
 
 
 def _scenario(multiplier):

@@ -32,7 +32,7 @@ Imagine a fire-safety consultant preparing an evacuation study for a block of fl
 | Works out how many people each room holds | `occupancy.py` |
 | Measures with a wheel how far you'd walk from the far corner of each room to the door out | `travel_distance.py` |
 | Draws the escape-route map, room → door → stair → exit | `egress.py` |
-| Thinks up the scenarios worth testing ("what if the main door is blocked?") and writes them up | `scenario_generation_llm.py` **(the AI part)** |
+| Thinks up the scenarios worth testing ("what if the main door is blocked?") and writes them up | `scenario_generation_llm_1.py` **(the AI part)** |
 | Decides where each person stands when the alarm goes off | `occupant_placement.py` |
 | Proofreads the whole report for mistakes | `validation.py` |
 | Hands the client the deliverable | `export_results.py` |
@@ -61,7 +61,7 @@ AI_Msc_project/
 │       ├── travel_distance.py           ← Step 5  how far is the walk to the exit
 │       ├── egress.py                    ← Step 6  joins 4 + 5 into one escape picture
 │       ├── llm.py                       ← the AI connection (Anthropic, or Mistral as backup)
-│       ├── scenario_generation_llm.py   ← Step 7  THE AI CALL — the heart of the project
+│       ├── scenario_generation_llm_1.py   ← Step 7  THE AI CALL — the heart of the project
 │       ├── occupant_placement.py        ← Step 8  put the people in the rooms
 │       ├── scenario_schema.py           ← the rulebook describing what a valid output looks like
 │       ├── validation.py                ← Step 9  proofreading / fact-checking
@@ -91,7 +91,7 @@ flowchart TD
     E --> G["Step 6 — One escape picture<br/>egress.py"]
     F --> G
     G --> H["Step 6b — Re-measure with the<br/>2 busiest exits blocked"]
-    H --> I["Step 7 — ONE AI call<br/>scenario_generation_llm.py"]
+    H --> I["Step 7 — ONE AI call<br/>scenario_generation_llm_1.py"]
     I --> J["Step 8 — Place the people room by room<br/>occupant_placement.py"]
     J --> K["Step 9 — Proofread<br/>validation.py"]
     K --> L["Step 10 — Download one JSON<br/>export_results.py"]
@@ -308,7 +308,7 @@ That's wrong twice over: people can't walk through walls, and the person in dang
 So this module measures the **real walked path**:
 
 1. **Build the walkable floor.** Take each room's footprint outline and shrink it inward by 15 cm
-   (`BODY_CLEARANCE_M`) — your shoulders don't scrape the wall, and more importantly the shrinking
+   (`body_clearance_m`) — your shoulders don't scrape the wall, and more importantly the shrinking
    creates a **gap between neighbouring rooms** so they don't merge through the shared wall. Then
    drop a small disc at every door position to **bridge** those gaps. Result: you can only get from
    room to room **through a door**, exactly like real life.
@@ -375,7 +375,7 @@ Two robustness details worth knowing:
 Anything that can't be resolved goes into **`not_assessed`** with a reason and the note
 `"flagged, not silently passed"`.
 
-**Step 6b — the degraded cases.** Before calling the AI, `scenario_generation_llm.py` finds the
+**Step 6b — the degraded cases.** Before calling the AI, `scenario_generation_llm_1.py` finds the
 **two busiest exits** (the ones the most rooms rely on) and runs the *entire* Step 5 + Step 6
 computation again with each one removed. So when the AI later writes a scenario about the main exit
 being blocked, there are **real recomputed numbers** to cite instead of invented ones. Two variants
@@ -385,7 +385,7 @@ is a deliberate limit — each one is a full raster + Dijkstra pass per storey, 
 
 ### Step 7 — The AI call (the heart of the project)
 
-**File: `core_backend/scenario_generation_llm.py`** · **Main function:
+**File: `core_backend/scenario_generation_llm_1.py`** · **Main function:
 `generate_scenario_object(...)`** · **AI connection: `core_backend/llm.py`**
 
 Everything above was preparation. Now, in **one single API call**, the AI is asked to do the one job
@@ -453,7 +453,7 @@ harder the AI must close an exit or slow the population down, never inflate the 
 `with_structured_output()`. The AI can't reply with prose — it must return data matching that shape,
 or it's rejected.
 
-**And if it's rejected?** `_invoke_structured()` retries up to **3 times**, and each retry **hands
+**And if it's rejected?** `invoke_structured()` retries up to **3 times**, and each retry **hands
 the model its own validation error** and tells it to clamp the offending field to the nearest allowed
 value. This exists because of a real failure: a model reaching for a "crowded building" scenario kept
 setting an occupancy multiplier above 1.0, which the schema forbids — and one bad field was throwing
@@ -612,9 +612,9 @@ This is the question an examiner will ask, so here it is in one table:
 | How many people in each room | **Published code floor-space factors** — arithmetic | `occupancy.py` |
 | How far to the exit | **Measured geodesically over the real floor plan** | `travel_distance.py` |
 | Nearest exit / reachability | **Graph search** over door and stair connections | `egress.py` |
-| **Which scenarios are worth testing** | **The AI** | `scenario_generation_llm.py` |
-| **The English write-up, routes, bottlenecks, risks** | **The AI** (numbers must be quoted, not invented) | `scenario_generation_llm.py` |
-| **Simulator settings — speeds, pre-movement, profiles** | **The AI** (range-checked, must state a basis) | `scenario_generation_llm.py` |
+| **Which scenarios are worth testing** | **The AI** | `scenario_generation_llm_1.py` |
+| **The English write-up, routes, bottlenecks, risks** | **The AI** (numbers must be quoted, not invented) | `scenario_generation_llm_1.py` |
+| **Simulator settings — speeds, pre-movement, profiles** | **The AI** (range-checked, must state a basis) | `scenario_generation_llm_1.py` |
 | Which room each person starts in | **Deterministic allocation** | `occupant_placement.py` |
 | Is the output trustworthy | **Schema + invariants + number fact-check** | `validation.py` |
 
@@ -689,9 +689,9 @@ piece by piece without the UI. Run from the `evacuation_project` folder:
 ```
 python -m core_backend.ifc_parser            path/to/model.ifc   # what's in the building
 python -m core_backend.uk_regulation_checking path/to/model.ifc  # PASS/FAIL, all four jurisdictions
-python -m core_backend.space_classifier      path/to/model.ifc --llm
+python -m core_backend.space_classifier      path/to/model.ifc llm
 python -m core_backend.egress                path/to/model.ifc   # occupancy + distances
-python -m core_backend.scenario_generation_llm path/to/model.ifc # the full AI generation
+python -m core_backend.scenario_generation_llm_1 path/to/model.ifc # the full AI generation
 python -m core_backend.validation            saved_object.json   # re-validate, no API cost
 python -m core_backend.export_results        saved_object.json   # re-export, no API cost
 ```

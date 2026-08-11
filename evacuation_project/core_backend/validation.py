@@ -9,7 +9,7 @@ from core_backend.scenario_schema import scenario_schema
 import sys
 import json
 import os
-from core_backend.scenario_generation_llm import build_full_scenario
+#from core_backend.scenario_generation_llm_1 import build_full_scenario
 from core_backend.sample_paths import default_ifc
 
 EXIT_CAPACITY_PERSONS_PER_M = 200
@@ -282,6 +282,7 @@ if __name__ == "__main__":
         with open(json_args[0], "r", encoding="utf-8") as f:
             obj = json.load(f)
     else:
+        from core_backend.scenario_generation_llm_1 import build_full_scenario
         obj = build_full_scenario(default_ifc(), jurisdiction="england")
         scratch = os.path.join(os.environ.get("TEMP", "."), "evac_scenario.json")
         with open(scratch, "w", encoding="utf-8") as f:

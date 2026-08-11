@@ -1,7 +1,6 @@
 #It will tell where all the people can be placed in the entire building since the residential building can only give the layout for it.
 import json
 import sys
-from core_backend.scenario_generation_llm_1 import build_full_scenario
 from core_backend.validation import validate
 from core_backend.sample_paths import resolve_ifc
 from core_backend.exit_names import discounted_exit_ids, exit_names, named
@@ -186,7 +185,9 @@ if __name__ == "__main__":
     if json_args:
         with open(json_args[0], "r", encoding="utf-8") as f:
             obj = validate(json.load(f))
+    
     else:
+        from core_backend.scenario_generation_llm_1 import build_full_scenario
         args = [a for a in sys.argv if not a.startswith("--")]
         obj = validate(build_full_scenario(resolve_ifc(args), jurisdiction="england"))
 
