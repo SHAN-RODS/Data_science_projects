@@ -36,7 +36,7 @@ except Exception:
     model_label = "no LLM configured"
 
 # header
-st.title("NLP Assisted Evacuation Scenario Generator")
+st.title("AI-Assisted Evacuation Scenario Generator")
 st.caption(
     "Upload an IFC/BIM model. The building is first checked against the selected regulation either pass or fail "
     "and later gives the AI generated scenarios."
