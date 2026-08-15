@@ -7,7 +7,7 @@ from core_backend.occupancy import occupant_load
 from core_backend.travel_distance import compute_travel_distances
 import sys
 from collections import Counter
-from core_backend.ifc_parser import parser_summary
+from core_backend.ifc_parser import occupiable_storeys, parser_summary
 from core_backend.space_classifier import classify_spaces
 from core_backend.sample_paths import resolve_ifc
 
@@ -49,7 +49,7 @@ def stair_adjacency(spaces, use_type):
 def build_graph(summary, classified, discounted_exits=frozenset()):
     spaces = {sp["id"]: sp for sp in summary["spaces"]}
     use_type = {c["guid"]: c["use_type"] for c in classified}
-    storeys = summary.get("storeys", [])
+    storeys = occupiable_storeys(summary.get("storeys", []))
 
     positions = {sp_id: sp["centroid"] for sp_id, sp in spaces.items()}
     adjacency = defaultdict(set)

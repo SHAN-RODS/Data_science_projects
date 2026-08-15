@@ -13,7 +13,7 @@ from core_backend.llm import select_llm
 from core_backend.egress import build_graph, ground_spaces, discount_exit, stair_adjacency
 from core_backend.exit_names import exit_names, name_exit_ids, named, resolve_exit_ids
 from core_backend.occupancy import jurisdiction_source
-from core_backend.ifc_parser import parser_summary
+from core_backend.ifc_parser import occupiable_storeys, parser_summary
 from core_backend.occupant_placement import attach_occupancy
 from core_backend.space_classifier import classify_spaces
 from core_backend.uk_regulation_checking import regulation_gate, load_regs
@@ -456,7 +456,7 @@ def building_block(summary, grounded, jurisdiction):
         "source_ifc": summary.get("source_ifc"),
         "jurisdiction": jurisdiction,
         "occupancy_type": "residential (dwellings)",
-        "storeys": len(summary.get("storeys", [])),
+        "storeys": len(occupiable_storeys(summary.get("storeys", []))),
         "total_floor_area_m2": total_area,
         "total_occupant_load": total_occ,
     }
@@ -504,7 +504,7 @@ storey_match_tol_m = 1.0
 
 def circulation_block(summary):
     flights = {f["id"]: f for f in summary.get("stair_flights", [])}
-    storeys = summary.get("storeys", [])
+    storeys = occupiable_storeys(summary.get("storeys", []))
 
     def storey_at(z):
         if z is None or not storeys:
@@ -635,7 +635,7 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
     grounded = ground_spaces(summary, classified, jurisdiction=jurisdiction)
     exits = resolve_exits(summary, classified, grounded)
     stairs = summary.get("stairs", [])
-    storeys = summary.get("storeys", [])
+    storeys = occupiable_storeys(summary.get("storeys", []))
 
     names = exit_names(exits)
 

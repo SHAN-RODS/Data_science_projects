@@ -4,7 +4,7 @@ import ifcopenshell.util.unit as unit_util
 import ifcopenshell.util.placement as placement_util
 import ifcopenshell.geom as geom_util
 import ifcopenshell.util.shape as shape_util
-from collections import defaultdict
+from collections import Counter, defaultdict
 import math
 import sys
 from core_backend.sample_paths import resolve_ifc
@@ -410,10 +410,35 @@ def transport_elements(model, scale):
     return results
 
 
-def storeys(model, scale):
+def spaces_per_storey(model, spaces=None):
+    # Authoring tools write an IfcBuildingStorey for every level they measure against,
+    # including pure datums — a foundation slab, a roof, a sea-level survey mark. Those
+    # host construction elements but no rooms, so nobody evacuates from them. Rooms are
+    # the signal that a level is occupied, and unlike a name blacklist it still works on
+    # models that were not authored in English.
+    counts = Counter()
+    if spaces is None:
+        for space in model.by_type("IfcSpace"):
+            storey_el = resolve_storey(space)
+            if storey_el is not None:
+                counts[storey_el.GlobalId] += 1
+    else:
+        for space in spaces:
+            storey_id = (space.get("storey") or {}).get("id")
+            if storey_id:
+                counts[storey_id] += 1
+    return counts
+
+
+def storeys(model, scale, spaces=None):
     storeys_list = model.by_type("IfcBuildingStorey")
     if not storeys_list:
         return []
+
+    space_counts = spaces_per_storey(model, spaces)
+    occupiable = {s.GlobalId for s in storeys_list if space_counts.get(s.GlobalId)}
+    if not occupiable:                    # no room landed on any level — keep them all
+        occupiable = {s.GlobalId for s in storeys_list}
 
     entrance_elevation = None
     for storey in storeys_list:
@@ -424,7 +449,10 @@ def storeys(model, scale):
 
     ground_reference_found = entrance_elevation is not None
     if entrance_elevation is None:
-        elevations = [s.Elevation for s in storeys_list if s.Elevation is not None]
+        # lowest level people are on — a foundation or a sea-level datum sits far below
+        # the entrance and would push every height above ground out by that whole offset
+        elevations = [s.Elevation for s in storeys_list
+                      if s.Elevation is not None and s.GlobalId in occupiable]
         entrance_elevation = min(elevations) if elevations else 0.0
 
     results = []
@@ -433,11 +461,21 @@ def storeys(model, scale):
         results.append({
             "id": storey.GlobalId,
             "name": storey.Name or "Unnamed Storey",
-            "elevation_m": raw_elevation * scale,                         
+            "elevation_m": raw_elevation * scale,
             "height_above_ground_m": (raw_elevation - entrance_elevation) * scale,
-            "ground_reference_found": ground_reference_found
+            "ground_reference_found": ground_reference_found,
+            "occupiable": storey.GlobalId in occupiable,
+            "space_count": space_counts.get(storey.GlobalId, 0)
         })
     return results
+
+
+def occupiable_storeys(storeys):
+    # The levels people are actually on. Storeys built before this flag existed carry no
+    # key and all pass; if nothing is flagged the full list comes back rather than leaving
+    # the caller with nothing to measure against.
+    occupied = [s for s in storeys if s.get("occupiable", True)]
+    return occupied or list(storeys)
 
 
 def smoke_alarms(model, scale):
@@ -744,7 +782,7 @@ def parser_summary(ifc_path):
     all_transport = transport_elements(model, scale)
 
     all_spaces = space_extract(model, scale, world_settings, levels)
-    all_storeys = storeys(model, scale)
+    all_storeys = storeys(model, scale, all_spaces)
     links = door_space_links(model)
     space_frame = reconcile_space_frame(all_spaces, all_doors, links, all_storeys)
     links, links_added = augment_door_space_links(links, all_spaces, all_doors, levels)
@@ -785,7 +823,8 @@ if __name__ == "__main__":
     print("Total Windows:", len(report["windows"]))
     print("Total Walls:", len(report["walls"]))
     print("Total Slabs:", len(report["slabs"]))
-    print("Total Storeys:", len(report["storeys"]))
+    print(f"Total Storeys: {len(occupiable_storeys(report['storeys']))} occupied "
+          f"({len(report['storeys'])} IFC levels incl. datums)")
     print("Total Smoke Alarms:", len(report["smoke_alarms"]))
     #print("Total Fire Suppression Terminals:", len(report["fire_suppression_terminals"]))
     print("Total Elevators:", len(report["elevators"]))

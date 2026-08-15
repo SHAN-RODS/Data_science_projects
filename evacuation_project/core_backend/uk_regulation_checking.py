@@ -4,7 +4,7 @@
 import json
 import os
 import sys
-from core_backend.ifc_parser import parser_summary
+from core_backend.ifc_parser import occupiable_storeys, parser_summary
 from core_backend.sample_paths import resolve_ifc
 
 rules_file = {
@@ -566,7 +566,7 @@ def wall_proximity_manual_review(walls, rule):
 # Wales — Approved Document B Volume 2
 def check_wales(summary, regs):
     flags = []
-    storeys = summary.get("storeys", [])
+    storeys = occupiable_storeys(summary.get("storeys", []))
     stairs = summary.get("stairs", [])
     stair_flights = summary.get("stair_flights", [])
 
@@ -588,7 +588,7 @@ def check_wales(summary, regs):
 # Northern Ireland — Technical Booklet E (2012)
 def check_northern_ireland(summary, regs):
     flags = []
-    storeys = summary.get("storeys", [])
+    storeys = occupiable_storeys(summary.get("storeys", []))
     stairs = summary.get("stairs", [])
 
     flags += storey_height_provision_check(storeys, regs["NI-R1"], len(stairs), "stair")
@@ -607,7 +607,7 @@ def check_northern_ireland(summary, regs):
 
 def check_scotland(summary, regs):
     flags = []
-    storeys = summary.get("storeys", [])
+    storeys = occupiable_storeys(summary.get("storeys", []))
     stairs = summary.get("stairs", [])
     walls = summary.get("walls", [])
 
