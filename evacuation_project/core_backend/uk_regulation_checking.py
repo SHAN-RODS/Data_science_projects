@@ -200,25 +200,7 @@ def annotate_and_summarize(summary, jurisdiction="england"):
         "not_assessed": result["not_assessed"],
     }
 
-# England — Approved Document B Volume 1 
-def door_width(doors, regs):
-    flags = []
-    rule = regs.get("ENG-R1")
-    limit_m = to_metres(rule["threshold_mark"], rule.get("unit"))
-    for door in doors:
-        width = door.get("width_m")
-        if width is None:
-            continue
-        if width < limit_m:
-            flags.append(flag(
-                rule, door, "door",
-                f"OverallWidth = {width:.3f}m ({int(width * 1000)}mm)",
-                f"Door '{door['name']}' is {width:.3f}m ({int(width * 1000)}mm) wide — "
-                f"below the {limit_m}m ({int(limit_m * 1000)}mm) minimum. "
-                f"Reference: {rule['doc_reference']}."
-            ))
-    return flags
-
+# England — Approved Document B Volume 1
 def exits(emergency_exits, regs):
     flags = []
     rule = regs.get("ENG-R11")
@@ -370,7 +352,6 @@ def floor_slabs(slabs, regs):
 
 def check_england(summary, regs):
     flags = []
-    flags += door_width(summary["doors"], regs)
     flags += exits(summary["emergency_exits"], regs)
     flags += possible_escape_route(summary["emergency_exits"], regs)
     flags += stair_width(summary["stairs"], regs)

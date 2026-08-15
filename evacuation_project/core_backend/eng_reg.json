@@ -2,19 +2,6 @@
   "jurisdiction": "England",
   "document_source": "England Regulations Approved Document-B Volume 1 Fire Safety with updated 2019 and 2022 Amendments.", 
   "regulations": [
-  {
-      "unique_id": "ENG-R1",
-      "regulation_name": "The minimum door width required for the escape route plan",   
-      "description": "The doorway or the nearest door exit should be open to escape such that it is having 750mm wide and at a minimum of 90 degrees if more than 60 people might be expected to use it during a fire emergency.",
-      "ifc_element": "IfcDoor",
-      "ifc_attribute_involved": "OverallWidth",
-      "comparison": "gte",
-      "threshold_mark": 0,
-      "unit": "mm",
-      "applies_to": "doors",
-      "severity_level": "critical",
-      "doc_reference": "Section 3, Paragraph 3.94 and 3.95"
-    },
     {
       "unique_id": "ENG-R2",
       "regulation_name": "The amount of door opening with minimum direction for possible escape route",   
