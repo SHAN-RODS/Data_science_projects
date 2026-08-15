@@ -76,8 +76,10 @@ def unknown_exit_references(obj):
     unknown = []
     for scn in obj.get("scenarios", []):
         conditions = scn.get("conditions") or {}
+        fire = scn.get("fire_conditions") or {}
         referenced = list(conditions.get("exits_available") or []) + \
-                     list(conditions.get("exits_discounted") or [])
+                     list(conditions.get("exits_discounted") or []) + \
+                     list(fire.get("affected_exits") or [])
         missing = sorted({t for t in referenced if isinstance(t, str) and t not in known})
         if missing:
             unknown.append({"scenario": scn.get("id"), "unknown_exits": missing})

@@ -42,7 +42,8 @@ class ScenarioConditions(BaseModel):
                                                     "e.g. ['Exit 3']")
     occupancy_state: str = Field(description="e.g. 'night', 'day', 'peak occupancy'")
     occupants_total: int = Field(description="occupants to evacuate under this scenario's state; must "
-                                             "not exceed the computed total occupant load")
+                                             "sit below the computed total occupant load, and must "
+                                             "differ from every other scenario's total")
 
 DISTRIBUTIONS = "constant, uniform, normal, lognormal"
 class PreMovement(BaseModel):
@@ -68,9 +69,31 @@ class OccupancyMultiplier(BaseModel):
     use_type: str = Field(description="a use_type appearing in the space list, e.g. 'dwelling'")
     multiplier: float = Field(
         description="0.0..1.0 INCLUSIVE — a hard limit, never above 1.0. It can only empty or thin a "
-                    "use-type, never overfill it (e.g. at night, commercial 0.0 and dwelling 1.0)",
+                    "use-type, never overfill it (at night, commercial 0.0 and dwelling 1.0; by day "
+                    "the reverse — dwelling thinned, commercial 1.0)",
         ge=0, le=1)
     reason: str
+
+class FireConditions(BaseModel):
+    fire_origin: str = Field(description="the space or area the fire is assumed to start in, named "
+                                         "from the space list below; or 'not fire-specific' for an "
+                                         "evacuation that is not driven by a fire location")
+    fire_origin_storey: str = Field(default="", description="the storey the origin sits on")
+    affected_exits: List[str] = Field(
+        default_factory=list,
+        description="exit NAMES the fire or its smoke makes unusable, e.g. ['Exit 2']. These are the "
+                    "reason a scenario discounts an exit, so they must match exits_discounted")
+    affected_routes: List[str] = Field(
+        default_factory=list,
+        description="stairs or circulation areas degraded by smoke, named from the facts")
+    detection_and_alarm: str = Field(description="the detection and alarm arrangement assumed, and "
+                                                 "when occupants are taken to become aware — this is "
+                                                 "what the pre-movement time is measured from")
+    smoke_conditions: str = Field(description="where smoke is assumed to spread and how it degrades "
+                                              "the routes above (visibility, tenability)")
+    basis: str = Field(description="the engineering reasoning for these fire assumptions in THIS "
+                                   "building — why this origin, and why it is a meaningful test")
+
 
 class SimulationSetup(BaseModel):
     movement_model: str = Field(description="'steering' (agent-based) or 'sfpe' (hydraulic)")
@@ -83,15 +106,18 @@ class SimulationSetup(BaseModel):
                     "occupants_total; omit or leave empty for a full-occupancy scenario")
 
 class ScenarioContent(BaseModel):
-    type: str = Field(description="e.g. 'base_case', 'one_exit_discounted'")
+    type: str = Field(description="e.g. 'night_occupancy', 'one_exit_discounted'")
     title: str
     conditions: ScenarioConditions
     assumptions: List[str]
-    occupant_distribution: List[str] = Field(description="occupants per storey/area, e.g. 'Floor_02: 8'")
+    occupant_distribution: List[str] = Field(
+        description="occupants per storey/area under THIS scenario's occupancy_multipliers, e.g. "
+                    "'Floor_02: 8'; must sum to occupants_total and differ from the other scenarios")
     routes: List[Route]
     bottlenecks: List[str]
     risks: List[str]
     narrative: str
+    fire_conditions: FireConditions
     simulation: SimulationSetup
     regulatory_justification: str = Field(
         description="the regulation clause(s) this scenario tests, cited ONLY from the given references")
@@ -100,10 +126,11 @@ class ScenarioContent(BaseModel):
 
 class BuildingAnalysis(BaseModel):
     scenarios: List[ScenarioContent] = Field(
-        description="At least FOUR distinct scenarios. The first must always be the base case with all "
-                    "exits available and normal occupancy. The rest must be selected autonomously from "
-                    "this building's geometry, exit arrangement, storeys, occupant distribution and "
-                    "computed travel distances — not chosen at random.")
+        description="At least FOUR distinct scenarios, selected autonomously from this building's "
+                    "geometry, exit arrangement, storeys, occupant distribution and computed travel "
+                    "distances — not chosen at random. Each must carry a DIFFERENT occupants_total and "
+                    "a DIFFERENT occupancy_multipliers set: no two scenarios may put the same number "
+                    "of people in the same rooms. None may sit at the full computed occupant load.")
 
 _SYSTEM = (
     "You are a fire-safety engineer preparing whole-building evacuation SCENARIOS (the input description "
@@ -121,11 +148,13 @@ _SYSTEM = (
     "geometry, storey layout, space types, occupant distribution, exit locations, computed travel "
     "distances and the circulation network. Do NOT choose scenarios randomly — analyse the building and "
     "create scenarios that are meaningful for this specific IFC model.\n\n"
-    "The first scenario MUST always be the Base Case: all final exits available, normal occupancy.\n\n"
+    "One scenario should keep all final exits available, so the set has an undegraded case to compare "
+    "against — but give it a realistic occupancy state like any other, NOT the full computed load.\n\n"
     "Choose the remaining scenarios by identifying the most realistic or most challenging evacuation "
     "conditions for THIS building. Examples (not mandatory, not exhaustive): loss of the busiest exit; "
-    "loss of the exit serving the largest population; loss of an upper-floor escape route; night "
-    "occupancy; daytime peak occupancy; maintenance closure of one exit; reduced exit capacity; high "
+    "loss of the exit serving the largest population; loss of an upper-floor escape route; sleeping "
+    "night occupancy; reduced daytime occupancy; maintenance closure of one exit; reduced exit "
+    "capacity; high "
     "occupancy concentrated on one storey; congestion at a stair; or any geometry-specific evacuation "
     "challenge you can see in the facts. Pick whichever best stress the evacuation routes, and make each "
     "scenario substantially different from the others.\n\n"
@@ -134,8 +163,59 @@ _SYSTEM = (
     "For every scenario determine: occupancy_state, occupants_total, exits_available, exits_discounted, "
     "occupant_distribution, routes (from_area -> via -> to_exit), bottlenecks, risks, assumptions and a "
     "short plain-English narrative. occupants_total must be consistent with your occupant_distribution "
-    "and must not exceed the computed total occupant load; if you reduce it (e.g. a night state), say so "
-    "in that scenario's assumptions.\n\n"
+    "and must sit below the computed total occupant load; say in that scenario's assumptions which "
+    "population you have taken out of the building and why.\n\n"
+    "VARY THE OCCUPANCY ACROSS THE SET — DO NOT REPEAT ONE POPULATION.\n"
+    "The computed total occupant load is a CAPACITY CEILING, not a scenario. Never write a scenario "
+    "that simply puts the whole computed load in the building: no real evacuation happens with every "
+    "room simultaneously at its code capacity, and a set whose scenarios all carry the same total and "
+    "the same distribution tells the study nothing — it is the same simulation run four times. These "
+    "are binding:\n"
+    "  * Every scenario sits BELOW the computed total occupant load, and every scenario carries an "
+    "explicit occupancy_multipliers set. None may be left empty.\n"
+    "  * No two scenarios may share the same occupants_total. Make the totals meaningfully different, "
+    "not a token occupant or two apart.\n"
+    "  * Vary WHERE the people are, not only how many. Two scenarios with the same multipliers seed "
+    "occupants into exactly the same rooms and are duplicates downstream even when their exits differ. "
+    "Shift the population between use types and storeys: a night state fills the dwellings and empties "
+    "commercial; a working-day state does the reverse; an evening state loads communal_amenity; a "
+    "scenario testing one stair concentrates occupants on the storeys that stair serves.\n"
+    "  * occupant_distribution must follow that scenario's own multipliers, so it differs across the "
+    "set too. Identical occupant_distribution lists across scenarios mean you have not varied "
+    "anything.\n\n"
+    "OCCUPANCY STATE — WHICH WAY THE NUMBERS MOVE.\n"
+    "The computed occupant load is the code-derived capacity of every room, so each state sits at or "
+    "below it. Which state is the busy one depends on the use types actually present in THIS building, "
+    "and for residential space the NIGHT is the busy one, not the quiet one:\n"
+    "  * NIGHT — residents are at home and asleep. Residential space (dwelling, bedroom, living, "
+    "kitchen, kitchen_living, dining) sits at or near its full computed load, while workplaces and "
+    "shared facilities stand empty (commercial and communal_amenity at 0.0 or close to it). Night is "
+    "the HARDER state for a residential building: more people inside, asleep, needing a longer and "
+    "more spread-out pre-movement time.\n"
+    "  * DAY — residents are out at work, school or elsewhere, so residential space is THINNED (a "
+    "'dwelling' or 'bedroom' multiplier well below 1.0), while commercial and communal_amenity space "
+    "runs at or near full. In a wholly or mostly residential building this makes the daytime "
+    "occupants_total the LOWER of the two.\n"
+    "Never give a mostly-residential building a night occupants_total below its day occupants_total — "
+    "that is backwards. If you write both states, give the multipliers that produce each and say in "
+    "the assumptions which population you have taken out of the building.\n\n"
+    "FIRE-RELATED CONDITIONS — one block per scenario, and they must match the scenario.\n"
+    "The IFC carries the geometry and the facts below carry the people; nothing carries the fire, so "
+    "you supply it. For each scenario give fire_conditions:\n"
+    "  * fire_origin (and fire_origin_storey) — the space the fire is assumed to start in, named from "
+    "the space list below. Never invent a room. Put the origin somewhere that makes the scenario worth "
+    "running: beside the exit you are discounting, on the storey with the longest travel distance, or "
+    "in a space whose loss cuts a route. If a scenario is not fire-driven, say 'not fire-specific'.\n"
+    "  * affected_exits / affected_routes — what that fire takes out. affected_exits MUST agree with "
+    "exits_discounted: an exit is discounted because something makes it unusable, and this is where "
+    "you say what. If the scenario discounts nothing, leave these empty.\n"
+    "  * detection_and_alarm — the detection and alarm arrangement assumed and when occupants become "
+    "aware. Pre-movement time is measured from that moment, so it must agree with the pre_movement "
+    "basis you give in the simulation block.\n"
+    "  * smoke_conditions — where smoke spreads and how it degrades those routes.\n"
+    "  * basis — why this origin, in THIS building, is a meaningful test.\n"
+    "Vary the fire across the set for the same reason you vary the occupancy: four scenarios with the "
+    "same origin and the same affected routes are one scenario.\n\n"
     "SIMULATION PARAMETERS — THESE ONES ARE YOURS TO CHOOSE.\n"
     "The occupant loads and travel distances above are computed and off-limits. The `simulation` block "
     "is different: it is the egress-simulation set-up, and you decide it per scenario. Give:\n"
@@ -150,10 +230,13 @@ _SYSTEM = (
     "speed distribution and shoulder width. Unimpeded walking speeds for able adults on the level are "
     "around 1.2 m/s and should stay inside 0.5-2.0 m/s; shoulder widths sit around 0.45-0.5 m. The "
     "`fraction` values MUST sum to exactly 1.0.\n"
-    "  * occupancy_multipliers — if this scenario's occupants_total is lower than the computed total "
-    "occupant load, give the per-use_type multipliers that produce it (e.g. a night state might set "
-    "'commercial' to 0.0 and keep 'dwelling' at 1.0). These are applied per room downstream, so they "
-    "are how your reduced total actually gets placed in the building. Leave empty for full occupancy. "
+    "  * occupancy_multipliers — REQUIRED on every scenario, never empty: the per-use_type multipliers "
+    "that produce this scenario's occupants_total from the computed load (e.g. a night state sets "
+    "'commercial' to 0.0 and keeps 'dwelling' at 1.0; a day state does the reverse, thinning "
+    "'dwelling' and 'bedroom' well below 1.0 while holding 'commercial' at 1.0). These are applied "
+    "per room downstream, so they are how your reduced total actually gets placed in the building — "
+    "they ARE the occupant distribution, and giving two scenarios the same set makes them the same "
+    "simulation. "
     "Every multiplier MUST lie between 0.0 and 1.0 inclusive — this is a hard limit, not a preference. "
     "The computed occupant loads are already the code-derived capacity of each room, so there is no "
     "such thing as a multiplier above 1.0: it would put more people in a room than the floor-space "
@@ -234,14 +317,14 @@ def facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded, 
         f"TOTAL OCCUPANT LOAD (computed): {building['total_occupant_load']}",
         "",
         "Storeys (name -> elevation / height above ground, metres):",
-    ]
+    ] 
     for s in storeys:
         lines.append(f"  - {s.get('name')}: elevation={_round(s.get('elevation_m'), 2)}, "
                      f"height_above_ground={_round(s.get('height_above_ground_m'), 2)}")
 
     lines += ["", "Final (ground-level) exits — occupants leave by these, refer to them by NAME:"]
     width_of = {e["id"]: e.get("width_m") for e in exits}
-    for exit_id, name in names.items():          # names are already in plan order
+    for exit_id, name in names.items():          
         lines.append(f"  - {name} (width_m={_round(width_of.get(exit_id), 2)})")
 
     if stairs:
@@ -348,7 +431,6 @@ def exits_block(exits, names):
 
 storey_match_tol_m = 1.0
 
-
 def circulation_block(summary):
     flights = {f["id"]: f for f in summary.get("stair_flights", [])}
     storeys = summary.get("storeys", [])
@@ -430,6 +512,7 @@ def assemble_scenario(sc, number, names):
         "bottlenecks": name_exit_ids(sc.bottlenecks, names),
         "risks": name_exit_ids(sc.risks, names),
         "narrative": name_exit_ids(sc.narrative, names),
+        "fire_conditions": name_exit_ids(sc.fire_conditions.model_dump(), names),
         "simulation": sc.simulation.model_dump(),
         "regulatory_justification": name_exit_ids(sc.regulatory_justification, names),
         "ai_explanation": name_exit_ids(sc.ai_explanation, names),

@@ -174,6 +174,19 @@ scenario_schema = {
                     "bottlenecks": {"type": "array"},
                     "risks": {"type": "array"},
                     "narrative": {"type": "string"},
+                    "fire_conditions": {
+                        "type": "object",
+                        "required": ["fire_origin", "detection_and_alarm", "smoke_conditions"],
+                        "properties": {
+                            "fire_origin": {"type": "string"},
+                            "fire_origin_storey": {"type": "string"},
+                            "affected_exits": {"type": "array", "items": {"type": "string"}},
+                            "affected_routes": {"type": "array", "items": {"type": "string"}},
+                            "detection_and_alarm": {"type": "string"},
+                            "smoke_conditions": {"type": "string"},
+                            "basis": {"type": "string"},
+                        },
+                    },
                     "simulation": {
                         "type": "object",
                         "required": ["movement_model", "pre_movement", "profiles"],

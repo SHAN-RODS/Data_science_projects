@@ -48,6 +48,48 @@ def _occupancy(scn):
     }
 
 
+def pre_movement_time(scn):
+    """How long occupants take to react before they move — a distribution, not a single number."""
+    pre = (scn.get("simulation") or {}).get("pre_movement") or {}
+    return {
+        "distribution": pre.get("distribution"),
+        "mean_s": pre.get("mean_s"),
+        "sd_s": pre.get("sd_s"),
+        "basis": pre.get("basis"),
+    }
+
+
+def movement_characteristic(scn):
+    """How the population moves once it starts: the model, and the profile mix driving it."""
+    sim = scn.get("simulation") or {}
+    return {
+        "movement_model": sim.get("movement_model"),
+        "profiles": [{
+            "name": p.get("name"),
+            "fraction": p.get("fraction"),
+            "speed_distribution": p.get("speed_distribution"),
+            "speed_ms_mean": p.get("speed_ms_mean"),
+            "speed_ms_sd": p.get("speed_ms_sd"),
+            "shoulder_width_m": p.get("shoulder_width_m"),
+            "basis": p.get("basis"),
+        } for p in sim.get("profiles") or []],
+    }
+
+
+def fire_related_conditions(scn):
+    """The fire-side assumptions: what burns, where, what it takes out, when people find out."""
+    fire = scn.get("fire_conditions") or {}
+    return {
+        "fire_origin": fire.get("fire_origin"),
+        "fire_origin_storey": fire.get("fire_origin_storey"),
+        "affected_exits": fire.get("affected_exits", []),
+        "affected_routes": fire.get("affected_routes", []),
+        "detection_and_alarm": fire.get("detection_and_alarm"),
+        "smoke_conditions": fire.get("smoke_conditions"),
+        "basis": fire.get("basis"),
+    }
+
+
 def build_records(obj):
     records = []
     for number, scn in enumerate(obj.get("scenarios", []), start=1):
@@ -61,6 +103,9 @@ def build_records(obj):
                 "conditions": scn.get("conditions", {}),
                 "occupancy": _occupancy(scn),
                 "occupant_distribution": scn.get("occupant_distribution", []),
+                "pre_movement_time": pre_movement_time(scn),
+                "movement_characteristic": movement_characteristic(scn),
+                "fire_related_conditions": fire_related_conditions(scn),
                 "assumptions": scn.get("assumptions", []),
                 "routes": scn.get("routes", []),
                 "bottlenecks": scn.get("bottlenecks", []),

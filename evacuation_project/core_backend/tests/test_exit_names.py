@@ -140,6 +140,11 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
                                   "speed_ms_mean": 1.2, "speed_ms_sd": 0.0,
                                   "shoulder_width_m": 0.45, "basis": "able adults"}],
                     "occupancy_multipliers": []},
+        fire_conditions={"fire_origin": "Living room", "fire_origin_storey": "Ground",
+                         "affected_exits": ["Exit 3"], "affected_routes": [],
+                         "detection_and_alarm": "smoke alarms in the dwelling",
+                         "smoke_conditions": "smoke blocks the Exit 3 lobby",
+                         "basis": "origin chosen to close Exit 3"},
         regulatory_justification="ENG-R11", ai_explanation="tests the loss of Exit 3")
 
     scn = assemble_scenario(content, 1, names)
@@ -149,6 +154,8 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
     assert scn["conditions"]["exits_available_ifc_ids"] == ["0vwVLBnBr9meBshDw$RHGp",
                                                             "3T$cyq5XDFhgqPE_ZtOXlr"]
     assert scn["routes"][0]["to_exit"] == "Exit 1"
+    # the fire block goes through the same naming pass, so it can never carry a raw GlobalId
+    assert scn["fire_conditions"]["affected_exits"] == ["Exit 3"]
 
 
 # ---- the record still closes the right door ---------------------------------------------------------

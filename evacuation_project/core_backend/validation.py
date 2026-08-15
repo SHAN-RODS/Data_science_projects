@@ -24,6 +24,15 @@ ALLOWED_DISTRIBUTIONS = {"constant", "uniform", "normal", "lognormal", "log-norm
 ALLOWED_MOVEMENT_MODELS = {"steering", "sfpe"}
 FRACTION_TOLERANCE = 0.01
 
+# In residential space the night is the busy state: residents are home and asleep, while by day they
+# are out. A scenario set that has it the other way round is inverted, not merely conservative.
+# The trigger is a material sleeping population, not a residential majority — a block of flats with a
+# large communal amenity is still a building whose night is the demanding one.
+SLEEPING_USE_TYPES = {"dwelling", "bedroom", "living", "kitchen", "kitchen_living", "dining", "sauna"}
+SLEEPING_SHARE_THRESHOLD = 0.25
+NIGHT_WORDS = ("night", "asleep", "sleeping", "overnight", "night-time", "nighttime")
+DAY_WORDS = ("day", "daytime", "day-time", "working hours", "office hours", "waking")
+
 
 def allowed_floats(obj):
     allowed = set()
@@ -178,6 +187,135 @@ def simulation_parameter_issues(obj):
     return issues
 
 
+def sleeping_share(obj):
+    """Share of the computed occupant load sitting in space where occupants may be asleep."""
+    total = sleeping = 0
+    for s in obj.get("spaces", []):
+        load = s.get("occupant_load") or 0
+        total += load
+        if s.get("use_type") in SLEEPING_USE_TYPES:
+            sleeping += load
+    return (sleeping / total) if total else 0.0
+
+
+def state_of(scenario):
+    state = str((scenario.get("conditions") or {}).get("occupancy_state") or "").lower()
+    if any(w in state for w in NIGHT_WORDS):
+        return "night"
+    if any(w in state for w in DAY_WORDS):
+        return "day"
+    return None
+
+
+def occupancy_state_issues(obj):
+    """Flag a sleeping-occupancy building whose night state holds fewer people than its day state."""
+    share = sleeping_share(obj)
+    if share < SLEEPING_SHARE_THRESHOLD:
+        return []
+
+    by_state = {"night": [], "day": []}
+    for scn in obj.get("scenarios", []):
+        state = state_of(scn)
+        if state:
+            total = (scn.get("conditions") or {}).get("occupants_total")
+            if isinstance(total, int):
+                by_state[state].append((scn.get("id"), total))
+    if not by_state["night"] or not by_state["day"]:
+        return []
+
+    night_id, night_total = max(by_state["night"], key=lambda r: r[1])
+    day_id, day_total = max(by_state["day"], key=lambda r: r[1])
+    if night_total >= day_total:
+        return []
+    return [{"scenario": night_id, "field": "occupants_total",
+             "issue": f"night occupancy is {night_total} but daytime occupancy ({day_id}) is "
+                      f"{day_total} — inverted for a building where {share:.0%} of the computed "
+                      f"occupant load sleeps on site. Residents are home and asleep at night, so the "
+                      f"night state should hold at least as many people as the day state; check this "
+                      f"scenario's occupancy_multipliers"}]
+
+
+def multiplier_signature(scenario):
+    """The per-use_type multipliers, as a comparable key. Two scenarios sharing a signature seed
+    occupants into the same rooms in the same proportions, whatever their exits do."""
+    sim = scenario.get("simulation") or {}
+    return tuple(sorted((m.get("use_type"), round(float(m.get("multiplier") or 0), 4))
+                        for m in (sim.get("occupancy_multipliers") or [])))
+
+
+def occupancy_variance_issues(obj):
+    """A scenario set only earns its keep if the scenarios differ. Flag totals at the computed
+    ceiling, repeated totals, and repeated distributions — each of which makes a scenario a
+    duplicate run rather than a distinct study input."""
+    scenarios = obj.get("scenarios") or []
+    if len(scenarios) < 2:
+        return []
+
+    issues = []
+    ceiling = (obj.get("building") or {}).get("total_occupant_load")
+
+    by_total, by_signature = defaultdict(list), defaultdict(list)
+    for scn in scenarios:
+        sid = scn.get("id")
+        total = (scn.get("conditions") or {}).get("occupants_total")
+        if isinstance(total, int):
+            by_total[total].append(sid)
+            if ceiling and total >= ceiling:
+                issues.append({"scenario": sid, "field": "occupants_total",
+                               "issue": f"occupants_total {total} is the building's whole computed "
+                                        f"load ({ceiling}) — that is a capacity ceiling, not an "
+                                        f"occupancy state; no evacuation happens with every room at "
+                                        f"its code capacity at once"})
+        by_signature[multiplier_signature(scn)].append(sid)
+
+    for total, ids in sorted(by_total.items()):
+        if len(ids) > 1:
+            issues.append({"scenario": ", ".join(str(i) for i in ids), "field": "occupants_total",
+                           "issue": f"{len(ids)} scenarios all evacuate {total} occupant(s) — vary the "
+                                    f"occupant load across the set so the scenarios test different "
+                                    f"populations"})
+
+    for signature, ids in by_signature.items():
+        if len(ids) > 1:
+            where = "no occupancy_multipliers at all" if not signature else "identical " \
+                    "occupancy_multipliers"
+            issues.append({"scenario": ", ".join(str(i) for i in ids),
+                           "field": "simulation.occupancy_multipliers",
+                           "issue": f"{len(ids)} scenarios have {where}, so they seed occupants into "
+                                    f"the same rooms in the same proportions — the occupant "
+                                    f"distribution does not vary across the set"})
+    return issues
+
+
+def fire_condition_issues(obj):
+    """An exit is discounted because something makes it unusable, and fire_conditions is where the
+    scenario says what. Flag a missing block, and a fire that disagrees with the exits it closed."""
+    issues = []
+    for scn in obj.get("scenarios", []):
+        sid = scn.get("id")
+        fire = scn.get("fire_conditions")
+        if not fire:
+            issues.append({"scenario": sid, "field": "fire_conditions",
+                           "issue": "no fire-related conditions given — the study has no fire origin, "
+                                    "detection assumption or smoke condition to run against"})
+            continue
+
+        discounted = set((scn.get("conditions") or {}).get("exits_discounted") or [])
+        affected = set(fire.get("affected_exits") or [])
+        if discounted != affected:
+            unexplained = sorted(discounted - affected)
+            unclosed = sorted(affected - discounted)
+            detail = []
+            if unexplained:
+                detail.append(f"{', '.join(unexplained)} discounted but not attributed to the fire")
+            if unclosed:
+                detail.append(f"{', '.join(unclosed)} hit by the fire but still counted as available")
+            issues.append({"scenario": sid, "field": "fire_conditions.affected_exits",
+                           "issue": "fire conditions and discounted exits disagree — " +
+                                    "; ".join(detail)})
+    return issues
+
+
 def placement_issues(obj):
     from core_backend.occupant_placement import scenario_occupancy
 
@@ -250,6 +388,9 @@ def validate(obj):
     has_sim = any(scn.get("simulation") for scn in obj["scenarios"])
     sim_issues = simulation_parameter_issues(obj) if has_sim else []
     place_issues = placement_issues(obj) if has_sim else []
+    direction_issues = occupancy_state_issues(obj)
+    variance_issues = occupancy_variance_issues(obj)
+    fire_issues = fire_condition_issues(obj)
 
     obj["validation"] = {
         "schema_valid": not schema_errors,
@@ -263,6 +404,9 @@ def validate(obj):
             "every_exit_named_exists": not unknown_exits,
             "simulation_parametersin_range": (not sim_issues) if has_sim else None,
             "every_occupant_placed_with_a_goal": (not place_issues) if has_sim else None,
+            "night_occupancy_not_below_day": not direction_issues,
+            "occupancy_varies_across_scenarios": not variance_issues,
+            "fire_conditions_match_discounted_exits": not fire_issues,
         },
         "unknown_exit_references": unknown_exits,
         "exit_capacity_persons": round(capacity),
@@ -270,6 +414,8 @@ def validate(obj):
         "ungrounded_numbers": ungrounded,
         "simulation_parameter_issues": sim_issues,
         "placement_issues": place_issues,
+        "occupancy_state_issues": direction_issues + variance_issues,
+        "fire_condition_issues": fire_issues,
         "not_assessed_count": len(obj.get("not_assessed", [])),
     }
     return obj

@@ -13,7 +13,8 @@ from core_backend.uk_regulation_checking import regulation_gate
 from core_backend.llm import select_llm
 from core_backend.scenario_generation_llm_1 import build_full_scenario
 from core_backend.validation import validate
-from core_backend.export_results import export_records, build_records
+from core_backend.export_results import (export_records, build_records, fire_related_conditions,
+                                         movement_characteristic, pre_movement_time)
 
 load_dotenv()
 os.makedirs("uploads", exist_ok=True)
@@ -175,17 +176,20 @@ with vb3:
 
 sim_issues = validation.get("simulation_parameter_issues", [])
 place_issues = validation.get("placement_issues", [])
-if sim_issues or place_issues:
+state_issues = validation.get("occupancy_state_issues", [])
+fire_issues = validation.get("fire_condition_issues", [])
+if sim_issues or place_issues or state_issues or fire_issues:
     with st.expander(f"Issues to review before running the study — {len(sim_issues)} parameter, "
-                     f"{len(place_issues)} placement", expanded=True):
-        st.dataframe(sim_issues + place_issues, use_container_width=True, hide_index=True)
+                     f"{len(place_issues)} placement, {len(state_issues)} occupancy, "
+                     f"{len(fire_issues)} fire", expanded=True):
+        st.dataframe(sim_issues + place_issues + state_issues + fire_issues,
+                     use_container_width=True, hide_index=True)
 
-m1, m2, m3, m4, m5 = st.columns(5)
+m1, m2, m3, m4 = st.columns(4)
 m1.metric("Storeys", building.get("storeys"))
-m2.metric("Total occupant load", building.get("total_occupant_load"))
-m3.metric("Total floor area (m²)", building.get("total_floor_area_m2"))
-m4.metric("Final exits", len(obj.get("exits", [])))
-m5.metric("Spaces", len(obj.get("spaces", [])))
+m2.metric("Total floor area (m²)", building.get("total_floor_area_m2"))
+m3.metric("Final exits", len(obj.get("exits", [])))
+m4.metric("Spaces", len(obj.get("spaces", [])))
 
 with st.expander(f"Final exits ({len(obj.get('exits', []))}) — what each name refers to"):
     st.caption("Exits are named Exit 1, Exit 2 … across the plan. The IFC name and GlobalId are here "
@@ -252,6 +256,43 @@ with d2:
     st.markdown("**Risks**")
     for line in scn.get("risks", []):
         st.write(f"- {line}")
+
+st.markdown("**Pre-movement time** — how long people take to react before they start moving, "
+            "measured from the alarm.")
+pre = pre_movement_time(scn)
+p1, p2, p3 = st.columns(3)
+p1.metric("Distribution", pre.get("distribution") or "—")
+p2.metric("Mean (s)", pre.get("mean_s") if pre.get("mean_s") is not None else "—")
+p3.metric("Spread, std dev (s)", pre.get("sd_s") if pre.get("sd_s") is not None else "—")
+if pre.get("basis"):
+    st.caption(f"Basis: {pre['basis']}")
+
+st.markdown("**Movement characteristic** — how the population moves once it starts.")
+movement = movement_characteristic(scn)
+st.caption(f"Movement model: {movement.get('movement_model') or '—'}")
+if movement.get("profiles"):
+    st.dataframe(movement["profiles"], use_container_width=True, hide_index=True)
+else:
+    st.caption("No occupant profiles given for this scenario.")
+
+st.markdown("**Fire-related conditions** — what the IFC cannot carry: what burns, where, what it "
+            "takes out, and when people find out.")
+fire = fire_related_conditions(scn)
+if any(fire.get(k) for k in ("fire_origin", "detection_and_alarm", "smoke_conditions")):
+    f1, f2, f3 = st.columns(3)
+    f1.metric("Fire origin", fire.get("fire_origin") or "—")
+    f2.metric("Origin storey", fire.get("fire_origin_storey") or "—")
+    f3.metric("Exits lost to the fire", len(fire.get("affected_exits") or []))
+    if fire.get("affected_exits"):
+        st.warning(f"Made unusable by this fire: {', '.join(fire['affected_exits'])}")
+    if fire.get("affected_routes"):
+        st.write(f"**Routes degraded:** {', '.join(fire['affected_routes'])}")
+    st.write(f"**Detection and alarm:** {fire.get('detection_and_alarm') or '—'}")
+    st.write(f"**Smoke conditions:** {fire.get('smoke_conditions') or '—'}")
+    if fire.get("basis"):
+        st.caption(f"Basis: {fire['basis']}")
+else:
+    st.caption("No fire-related conditions were generated for this scenario.")
 
 occupancy = scn.get("occupancy") or {}
 if occupancy.get("unplaced_total"):

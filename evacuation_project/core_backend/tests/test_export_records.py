@@ -1,9 +1,10 @@
 """The exported deliverable is a flat array of six-field records, one per scenario (no API / no IFC).
 
 Each record carries the egress-simulation set-up: the IFC elements with this scenario's open/closed
-states, the AI-chosen simulation parameters and the scenario's occupancy — all inside those same six
-fields, and all as JSON. The longer working (per-room placement, benchmark distances, narrative,
-unassessed rooms) stays in the full building object and is deliberately kept out of the records.
+states, the scenario's occupancy, and the three input blocks a study needs — pre-movement time,
+movement characteristic and fire-related conditions — all inside those same six fields, and all as
+JSON. The longer working (per-room placement, benchmark distances, narrative, unassessed rooms) stays
+in the full building object and is deliberately kept out of the records.
 """
 
 import json
@@ -25,6 +26,18 @@ def _simulation():
                       "speed_ms_mean": 1.19, "speed_ms_sd": 0.24, "shoulder_width_m": 0.46,
                       "basis": "able adults on the level"}],
         "occupancy_multipliers": [],
+    }
+
+
+def _fire(origin="Office", affected_exits=()):
+    return {
+        "fire_origin": origin,
+        "fire_origin_storey": "G",
+        "affected_exits": list(affected_exits),
+        "affected_routes": [],
+        "detection_and_alarm": "automatic detection throughout, alarm at detection",
+        "smoke_conditions": "smoke held to the room of origin for the first two minutes",
+        "basis": "origin beside the exit under test",
     }
 
 
@@ -57,6 +70,7 @@ def _obj():
              "occupant_distribution": ["G: 20"], "assumptions": ["all exits usable"],
              "routes": [{"from_area": "G", "via": "ST1", "to_exit": "E1", "note": ""}],
              "bottlenecks": [], "risks": [], "narrative": "All leave.", "simulation": _simulation(),
+             "fire_conditions": _fire(),
              "regulatory_justification": "ENG-R11/R12", "ai_explanation": "baseline"},
             {"id": "SCN-EXIT-BLOCKED", "type": "one_exit_discounted", "title": "One exit discounted",
              "conditions": {"exits_available": ["E2"], "exits_discounted": ["E1"],
@@ -64,7 +78,7 @@ def _obj():
              "occupant_distribution": ["G: 20"], "assumptions": ["E1 blocked"],
              "routes": [{"from_area": "G", "via": "ST1", "to_exit": "E2", "note": "reroute"}],
              "bottlenecks": ["E2"], "risks": ["congestion"], "narrative": "Reroute.",
-             "simulation": _simulation(),
+             "simulation": _simulation(), "fire_conditions": _fire("Store", affected_exits=["E1"]),
              "regulatory_justification": "ADB discounted-exit principle", "ai_explanation": "resilience"},
         ],
     }
@@ -126,20 +140,62 @@ def test_a_discounted_exit_is_closed_in_that_scenario_only():
     assert blocked["E1"] == "closed" and blocked["E2"] == "open"
 
 
-def test_the_simulation_set_up_stays_in_the_building_object():
-    """The AI-chosen parameters are reviewed against the full object, not shipped in the record."""
+def test_the_raw_simulation_block_is_not_shipped_verbatim():
+    """The record carries the parameters a study needs under named keys — pre_movement_time and
+    movement_characteristic — not the whole internal simulation block with its working."""
     obj = _obj()
     assert obj["scenarios"][0]["simulation"]                    # still generated and validated
     for rec in build_records(obj):
         assert "simulation" not in rec["scenario"]
+        assert "occupancy_multipliers" not in rec["scenario"]["movement_characteristic"]
+        assert "end_time_s" not in rec["scenario"]["movement_characteristic"]
 
 
 def test_the_record_body_is_the_slim_set_of_fields():
     """The working that stays in the building object must not leak back into the deliverable."""
-    body = {"conditions", "occupancy", "occupant_distribution",
+    body = {"conditions", "occupancy", "occupant_distribution", "pre_movement_time",
+            "movement_characteristic", "fire_related_conditions",
             "assumptions", "routes", "bottlenecks", "risks"}
     for rec in build_records(_obj()):
         assert set(rec["scenario"].keys()) == body
+
+
+# ---- the three scenario-input blocks ---------------------------------------------------------------
+
+def test_pre_movement_time_ships_as_a_distribution():
+    """Pre-movement is often the largest term in total evacuation time; a single number loses the
+    spread, so the record carries the distribution and the basis behind it."""
+    pre = build_records(_obj())[0]["scenario"]["pre_movement_time"]
+    assert pre == {"distribution": "normal", "mean_s": 60.0, "sd_s": 30.0,
+                   "basis": "alert occupants, staff-assisted"}
+
+
+def test_movement_characteristic_carries_the_model_and_the_profile_mix():
+    movement = build_records(_obj())[0]["scenario"]["movement_characteristic"]
+    assert movement["movement_model"] == "steering"
+    profile = movement["profiles"][0]
+    assert profile["speed_ms_mean"] == 1.19
+    assert profile["shoulder_width_m"] == 0.46
+    assert profile["fraction"] == 1.0
+    assert profile["basis"]                                     # every value states its reasoning
+
+
+def test_fire_related_conditions_carry_origin_detection_and_smoke():
+    fire = build_records(_obj())[1]["scenario"]["fire_related_conditions"]
+    assert fire["fire_origin"] == "Store"
+    assert fire["affected_exits"] == ["E1"]                     # the exit this scenario discounts
+    assert fire["detection_and_alarm"] and fire["smoke_conditions"] and fire["basis"]
+
+
+def test_the_three_blocks_survive_a_scenario_that_never_got_them():
+    """A hand-edited or older object must export a shaped block, not blow up or drop the key."""
+    obj = _obj()
+    del obj["scenarios"][0]["simulation"]
+    del obj["scenarios"][0]["fire_conditions"]
+    body = build_records(obj)[0]["scenario"]
+    assert body["pre_movement_time"]["mean_s"] is None
+    assert body["movement_characteristic"]["profiles"] == []
+    assert body["fire_related_conditions"]["fire_origin"] is None
 
 
 def test_occupancy_is_the_headline_total_and_state_only():
