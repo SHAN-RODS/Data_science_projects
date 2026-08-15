@@ -188,12 +188,11 @@ not_assessed = obj.get("not_assessed", [])
 section(f"Step 2 — Building: {building.get('project')}",
         "Everything below is computed from the IFC geometry, not chosen by the AI.")
 
-m1, m2, m3, m4, m5 = st.columns(5)
+m1, m2, m3, m4 = st.columns(4)
 m1.metric("Storeys", building.get("storeys"))
 m2.metric("Floor area (m²)", building.get("total_floor_area_m2"))
 m3.metric("Final exits", len(obj.get("exits", [])))
 m4.metric("Spaces", len(obj.get("spaces", [])))
-m5.metric("Computed occupant load", building.get("total_occupant_load"))
 
 with st.container(border=True):
     st.markdown("**Quality checks**")

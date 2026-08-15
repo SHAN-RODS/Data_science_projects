@@ -1,6 +1,7 @@
 #This uses both the LLM provider anthropic and mistral ai as fallback using Langchain
 
 import os
+import sys
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_mistralai import ChatMistralAI
@@ -13,11 +14,29 @@ def accepts_temperature(model_name):
     name = (model_name or "").lower()
     return not any(tag in name for tag in NO_SAMPLING_PARAMETER)
 
+
+def setting(name):
+    # a key left blank in .env reads as "" and is falsy, so an ANTHROPIC_API_KEY= line with nothing
+    # after it silently drops the run onto the fallback provider — treat blank as absent, out loud
+    value = os.getenv(name)
+    return value.strip() if value and value.strip() else None
+
+
+def fallback_warning():
+    """Why the configured provider is not the one running, or None when nothing is off."""
+    if setting("ANTHROPIC_API_KEY"):
+        return None
+    if not setting("ANTHROPIC_MODEL"):
+        return None
+    return (f"ANTHROPIC_MODEL is set to {setting('ANTHROPIC_MODEL')} but ANTHROPIC_API_KEY is "
+            f"empty or missing, so that model is NOT being used")
+
+
 def select_llm(max_tokens=1024, timeout=None):
     req_timeout = timeout if timeout is not None else float(os.getenv("LLM_TIMEOUT", "300"))
     max_retries = int(os.getenv("LLM_MAX_RETRIES", "2"))
 
-    if os.getenv("ANTHROPIC_API_KEY"):
+    if setting("ANTHROPIC_API_KEY"):
         model = os.getenv("ANTHROPIC_MODEL")
         kwargs = {"model_name": model, "max_tokens": max_tokens,
                   "default_request_timeout": req_timeout, "max_retries": max_retries}
@@ -27,10 +46,14 @@ def select_llm(max_tokens=1024, timeout=None):
                 kwargs["temperature"] = float(temperature)
         return ChatAnthropic(**kwargs), f"{model} (Anthropic API)"
 
-    mistral_key = os.getenv("MISTRAL_API_KEY") or os.getenv("mistral")
+    mistral_key = setting("MISTRAL_API_KEY") or setting("mistral")
     if mistral_key:
         model = os.getenv("MISTRAL_MODEL")
         temperature = os.getenv("MISTRAL_TEMPERATURE")
+        label = f"{model} (Mistral AI)"
+        warning = fallback_warning()
+        if warning:
+            print(f"[llm] {warning} — falling back to {label}", file=sys.stderr)
         return (
             ChatMistralAI(
                 model=model,
@@ -40,8 +63,21 @@ def select_llm(max_tokens=1024, timeout=None):
                 timeout=int(req_timeout),
                 max_retries=max_retries,
             ),
-            f"{model} (Mistral AI)",
+            label,
         )
     raise RuntimeError(
         "No LLM provider configured: set ANTHROPIC_API_KEY or MISTRAL_API_KEY in .env"
     )
+
+
+def structured_output(llm, schema, include_raw=True):
+    """Bind a schema the way the provider in hand actually honours it.
+
+    langchain_mistralai binds tool calling as ``tool_choice="any"`` — it cannot force a named tool
+    (its own TODO says so) — so a reply that skips the tool parses to None and the whole run is
+    lost. Its json_schema method puts the schema in ``response_format`` where the API enforces it.
+    Anthropic forces the tool by name already, so its default path is left alone.
+    """
+    if isinstance(llm, ChatMistralAI):
+        return llm.with_structured_output(schema, method="json_schema", include_raw=include_raw)
+    return llm.with_structured_output(schema, include_raw=include_raw)

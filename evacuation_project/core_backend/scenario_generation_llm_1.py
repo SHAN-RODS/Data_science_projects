@@ -3,7 +3,7 @@
 
 import os
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 from typing import List
 
@@ -601,35 +601,153 @@ def assemble_scenario(sc, number, names):
 
 
 GENERATION_ATTEMPTS = int(os.getenv("EVAC_GEN_ATTEMPTS", "3"))
+# four scenarios come back at roughly 12k tokens, and a repair attempt re-emits the whole structure,
+# so the old 16384 ceiling left little headroom. Only what the model writes is billed, so the higher
+# ceiling costs nothing on a normal run — it just stops a long reply being cut off part-way.
+GENERATION_MAX_TOKENS = int(os.getenv("EVAC_GEN_MAX_TOKENS", "24000"))
 
 
-def invoke_structured(llm, prompt, attempts=None):
+class NoStructuredReply(RuntimeError):
+    """The model answered without the structured result the schema call requires."""
+
+
+def multiplier_signature(sc):
+    """The scenario's multipliers as a comparable key — the same one validation.multiplier_signature
+    builds from the assembled object, so a set that clears this clears that."""
+    return tuple(sorted((m.use_type, round(float(m.multiplier or 0), 4))
+                        for m in (sc.simulation.occupancy_multipliers or [])))
+
+
+def room_capacity(spaces, sc):
+    """How many occupants this scenario's own multipliers leave room for: every room's computed load,
+    thinned by the multiplier for its use type. This is the sum occupant_placement.scenario_weights
+    takes downstream — the arithmetic that actually seats people — so a scenario clearing it places
+    everyone it asks for."""
+    multipliers = {m.use_type: m.multiplier for m in (sc.simulation.occupancy_multipliers or [])}
+    seats = sum((s["occupant_load"] or 0) * multipliers.get(s["use_type"], 1.0)
+                for s in spaces if (s["occupant_load"] or 0) > 0)
+    return int(seats)
+
+
+def occupancy_findings(analysis, spaces, ceiling):
+    """Faults the schema cannot see, because every field is individually in range and the
+    contradiction is between them: a total this scenario's own multipliers cannot seat, a total at
+    the computed ceiling, and two scenarios that seed occupants into the same rooms in the same
+    proportions. Unreported they reach the study as validation findings the reader has to reconcile
+    by hand; handed back to the model, they are repaired before anyone sees them."""
+    findings = []
+    by_total, by_signature = defaultdict(list), defaultdict(list)
+
+    for number, sc in enumerate(analysis.scenarios, start=1):
+        label = f"scenario {number} ({sc.type})"
+        total = sc.conditions.occupants_total
+        seats = room_capacity(spaces, sc)
+
+        if total > seats:
+            findings.append(
+                f"{label}: occupants_total is {total} but its own occupancy_multipliers leave rooms "
+                f"holding only {seats} — {total - seats} occupant(s) could not be placed without "
+                f"pushing rooms past their computed load, so the study would run short of people. "
+                f"Either lower occupants_total to {seats}, or raise the multipliers (never above "
+                f"1.0) until the rooms hold {total}.")
+        if ceiling and total >= ceiling:
+            findings.append(
+                f"{label}: occupants_total {total} is the building's whole computed load "
+                f"({ceiling}) — that is a capacity ceiling, not an occupancy state. Choose a total "
+                f"below it.")
+
+        by_total[total].append(label)
+        by_signature[multiplier_signature(sc)].append(label)
+
+    for total, labels in sorted(by_total.items()):
+        if len(labels) > 1:
+            findings.append(f"{' and '.join(labels)} all evacuate {total} occupant(s) — give each "
+                            f"scenario a meaningfully different occupants_total.")
+
+    for signature, labels in by_signature.items():
+        if len(labels) > 1:
+            shared = "no occupancy_multipliers at all" if not signature else \
+                     "identical occupancy_multipliers"
+            findings.append(
+                f"{' and '.join(labels)} have {shared}, so they seed occupants into the same rooms "
+                f"in the same proportions and are the same simulation run twice — vary the "
+                f"multipliers so the population sits in different rooms, not only in different "
+                f"numbers.")
+    return findings
+
+
+def repair_prompt(prompt, failure):
+    if isinstance(failure, ValidationError):
+        return (f"{prompt}\n\n=== YOUR PREVIOUS REPLY WAS REJECTED ===\n"
+                f"It failed schema validation:\n{failure}\n\n"
+                f"Return the whole BuildingAnalysis again with those fields corrected. Every bound "
+                f"in the schema is a hard limit, not a preference — clamp to the nearest allowed "
+                f"value and adjust your reasoning to match, rather than restating the value you "
+                f"first chose. Leave everything else as it was.")
+    if isinstance(failure, list):
+        listed = "\n".join(f"  - {finding}" for finding in failure)
+        return (f"{prompt}\n\n=== YOUR PREVIOUS REPLY WAS REJECTED ===\n"
+                f"Every field was in range, but the scenario set failed the occupancy checks the "
+                f"study applies downstream:\n{listed}\n\n"
+                f"Return the whole BuildingAnalysis again with those scenarios corrected. The "
+                f"occupancy_multipliers are what actually seat the occupants room by room, so they "
+                f"and occupants_total have to agree — a total its own multipliers cannot hold is a "
+                f"simulation that silently runs short of people. Leave the scenarios that were not "
+                f"named as they are.")
+    return (f"{prompt}\n\n=== YOUR PREVIOUS REPLY WAS REJECTED ===\n"
+            f"It carried no structured result at all — the reply either ran past the "
+            f"{GENERATION_MAX_TOKENS}-token ceiling part-way through or answered in prose.\n\n"
+            f"Return the whole BuildingAnalysis as a structured result. Keep every required field "
+            f"and every scenario, but write the prose fields tersely enough that the reply finishes.")
+
+
+def invoke_structured(llm, prompt, attempts=None, review=None):
+    """``review`` returns a list of findings on an otherwise valid reply. Findings are handed back
+    the way a schema error is, but they never sink the run: a flawed scenario set is still a usable
+    one, and validation reports every finding downstream, so the closest reply is kept rather than an
+    expensive call thrown away."""
     structured = llm.with_structured_output(BuildingAnalysis)
     attempts = max(1, attempts if attempts is not None else GENERATION_ATTEMPTS)
-    last_error = None
+    last_failure = None
+    closest = None
     for attempt in range(attempts):
-        if last_error is None:
-            ask = prompt
-        else:
-            ask = (f"{prompt}\n\n=== YOUR PREVIOUS REPLY WAS REJECTED ===\n"
-                   f"It failed schema validation:\n{last_error}\n\n"
-                   f"Return the whole BuildingAnalysis again with those fields corrected. Every bound "
-                   f"in the schema is a hard limit, not a preference — clamp to the nearest allowed "
-                   f"value and adjust your reasoning to match, rather than restating the value you "
-                   f"first chose. Leave everything else as it was.")
+        ask = prompt if last_failure is None else repair_prompt(prompt, last_failure)
         try:
-            return structured.invoke(ask)
+            analysis = structured.invoke(ask)
         except ValidationError as exc:
-            last_error = exc
-            print(f"[scenario generation] attempt {attempt + 1}/{attempts} rejected by the schema; "
-                  f"{'retrying with the error fed back' if attempt + 1 < attempts else 'giving up'}",
-                  file=sys.stderr)
-    raise last_error
+            last_failure = exc
+            reason = "rejected by the schema"
+        else:
+            # a reply with no tool call parses to None rather than raising, so it has to be
+            # caught here — left alone it reaches the caller as an attribute error on None
+            if analysis is None:
+                last_failure = NoStructuredReply(
+                    f"the model returned no structured result in {attempts} attempt(s) — the reply "
+                    f"most likely ran past the {GENERATION_MAX_TOKENS}-token ceiling part-way "
+                    f"through the structure. Raise EVAC_GEN_MAX_TOKENS and run it again.")
+                reason = "no structured result returned"
+            else:
+                findings = review(analysis) if review is not None else []
+                if not findings:
+                    return analysis
+                if closest is None or len(findings) < len(closest[1]):
+                    closest = (analysis, findings)
+                last_failure = findings
+                reason = f"{len(findings)} occupancy finding(s)"
+        print(f"[scenario generation] attempt {attempt + 1}/{attempts} {reason}; "
+              f"{'retrying with the reason fed back' if attempt + 1 < attempts else 'giving up'}",
+              file=sys.stderr)
+    if closest is not None:
+        print(f"[scenario generation] {len(closest[1])} occupancy finding(s) survived "
+              f"{attempts} attempt(s); keeping the closest set — validation reports them on the "
+              f"generated object", file=sys.stderr)
+        return closest[0]
+    raise last_failure
 
 
 def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, model_label=None):
     if llm is None:
-        llm, model_label = select_llm(max_tokens=16384,
+        llm, model_label = select_llm(max_tokens=GENERATION_MAX_TOKENS,
                                       timeout=float(os.getenv("EVAC_GEN_TIMEOUT", "600")))
 
     grounded = ground_spaces(summary, classified, jurisdiction=jurisdiction)
@@ -646,7 +764,10 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
     facts = facts_block(building, grounded, exits, stairs, storeys, regulation_refs, degraded, names)
     prompt = f"{SYSTEM_PROMPT}\n\n=== COMPUTED BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{TASK}"
 
-    analysis = invoke_structured(llm, prompt)
+    ceiling = building["total_occupant_load"]
+    analysis = invoke_structured(
+        llm, prompt,
+        review=lambda reply: occupancy_findings(reply, grounded["spaces"], ceiling))
 
     obj = {
         "schema_version": "1.0",

@@ -13,7 +13,8 @@ the last test pins that a model which never complies still fails loudly.
 import pytest
 from pydantic import ValidationError
 
-from core_backend.scenario_generation_llm_1 import BuildingAnalysis, invoke_structured
+from core_backend.scenario_generation_llm_1 import (BuildingAnalysis, NoStructuredReply,
+                                                    invoke_structured)
 
 
 def sample_scenario(multiplier):
@@ -104,3 +105,48 @@ def test_attempts_are_bounded():
         invoke_structured(llm, "PROMPT", attempts=2)
 
     assert len(llm.prompts) == 2
+
+
+class SilentLLM:
+    """A reply carrying no tool call parses to None instead of raising.
+
+    Seen in practice when the reply runs past the token ceiling part-way through the structure.
+    ``replies`` is what each attempt returns, sticking on the last one.
+    """
+
+    def __init__(self, replies):
+        self.replies = replies
+        self.prompts = []
+
+    def with_structured_output(self, model):
+        llm = self
+
+        class Structured:
+            def invoke(self, prompt):
+                llm.prompts.append(prompt)
+                index = min(len(llm.prompts) - 1, len(llm.replies) - 1)
+                return llm.replies[index]
+
+        return Structured()
+
+
+def test_an_empty_reply_is_retried_not_handed_back_as_none():
+    # returning None here reached the caller as `'NoneType' object has no attribute 'scenarios'`
+    llm = SilentLLM([None, BuildingAnalysis(scenarios=[sample_scenario(1.0)])])
+
+    analysis = invoke_structured(llm, "PROMPT")
+
+    assert len(llm.prompts) == 2
+    assert analysis.scenarios[0].simulation.occupancy_multipliers[0].multiplier == 1.0
+    assert "PROMPT" in llm.prompts[1]
+    assert "no structured result" in llm.prompts[1]
+
+
+def test_a_model_that_never_replies_fails_with_an_actionable_error():
+    llm = SilentLLM([None])
+
+    with pytest.raises(NoStructuredReply) as excinfo:
+        invoke_structured(llm, "PROMPT", attempts=2)
+
+    assert len(llm.prompts) == 2
+    assert "EVAC_GEN_MAX_TOKENS" in str(excinfo.value)
