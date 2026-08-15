@@ -86,7 +86,7 @@ def rule_kind(rule):
     return None
 
 
-def _note(rule, element, element_type, attribute, measured, limit, meets):
+def regulation_note(rule, element, element_type, attribute, measured, limit, meets):
     return {
         "regulation_id": rule["unique_id"],
         "regulation_name": rule.get("regulation_name"),
@@ -129,7 +129,7 @@ def annotate(summary, jurisdiction="england"):
                 if width is None:
                     not_assessed.append(missing(rule, door, "door", "width"))
                 else:
-                    notes.append(_note(rule, door, "door", "width_m",
+                    notes.append(regulation_note(rule, door, "door", "width_m",
                                        round(width, 3), limit, width >= limit))
 
         elif kind == "stair_width":
@@ -139,7 +139,7 @@ def annotate(summary, jurisdiction="england"):
                 if width is None:
                     not_assessed.append(missing(rule, stair, "stair", "width"))
                 else:
-                    notes.append(_note(rule, stair, "stair", "width",
+                    notes.append(regulation_note(rule, stair, "stair", "width",
                                        round(width, 3), limit, width >= limit))
 
         elif kind == "window_area":
@@ -149,14 +149,14 @@ def annotate(summary, jurisdiction="england"):
                 if area is None:
                     not_assessed.append(missing(rule, window, "window", "opening area"))
                 else:
-                    notes.append(_note(rule, window, "window", "area_m2",
+                    notes.append(regulation_note(rule, window, "window", "area_m2",
                                        round(area, 3), limit, area >= limit))
 
         elif kind == "exits_count":
             limit = int(rule["threshold_mark"])
             count = len(summary.get("emergency_exits", []))
             building = {"id": "BUILDING", "name": "Building"}
-            notes.append(_note(rule, building, "exits", "emergency_exit_count",
+            notes.append(regulation_note(rule, building, "exits", "emergency_exit_count",
                                count, limit, count >= limit))
 
     return {"regulation_notes": notes, "not_assessed": not_assessed}

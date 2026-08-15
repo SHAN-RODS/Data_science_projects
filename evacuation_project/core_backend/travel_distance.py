@@ -38,7 +38,7 @@ def inset(poly):
     return poly
 
 
-class _Field:
+class DistanceField:
     def __init__(self, walkable, seeds, cell_m=CELL_M):
         minx, miny, maxx, maxy = walkable.bounds
         self.minx, self.miny, self.cell = minx, miny, cell_m
@@ -212,7 +212,8 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
             if p is not None:
                 seeds.append((door_portal(p[0], p[1], ex.get("width_m")), 0.0))
         if walk_geoms and seeds:
-            ground_field = _Field(shapely.union_all(walk_geoms + [g for g, _ in seeds]), seeds)
+            ground_field = DistanceField(
+                shapely.union_all(walk_geoms + [g for g, cost in seeds]), seeds)
 
     results = {}
 
@@ -252,7 +253,8 @@ def compute_travel_distances(summary, classified, final_exits, discounted=frozen
         if not seeds:
             continue
         walk_geoms = insets_on_storey.get(sid, []) + doors_on_storey.get(sid, [])
-        field = _Field(shapely.union_all(walk_geoms + [g for g, _ in seeds]), seeds)
+        field = DistanceField(
+            shapely.union_all(walk_geoms + [g for g, cost in seeds]), seeds)
         measure_storey(sid, field)
 
     for sid in by_storey:

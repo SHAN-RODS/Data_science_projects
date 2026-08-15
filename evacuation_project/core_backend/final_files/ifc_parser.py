@@ -115,7 +115,7 @@ def resolve_storey(space):
     return None
 
 
-def _nearest_storey(z, storey_levels):
+def nearest_storey(z, storey_levels):
     if z is None or not storey_levels:
         return None
     return min(storey_levels, key=lambda s: abs(s["elevation_m"] - z))
@@ -155,7 +155,7 @@ def space_extract(model, scale, settings, storey_levels):
         else:
             if raw is not None:
                 centroid = raw
-                near = _nearest_storey(raw[2], storey_levels)
+                near = nearest_storey(raw[2], storey_levels)
                 if near is not None:
                     storey = {"id": near["id"], "name": near["name"]}
 
@@ -202,7 +202,7 @@ def doors(model, scale):
         })
     return results
 
-def _element_bbox(element, settings):
+def element_bbox(element, settings):
     try:
         shape = geom_util.create_shape(settings, element)
         verts = shape.geometry.verts
@@ -214,8 +214,8 @@ def _element_bbox(element, settings):
     return (max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
 
 
-_STAIR_MIN_RISE_M = 1.0
-_STAIR_MIN_WIDTH_M = 0.6
+STAIR_MIN_RISE_M = 1.0
+STAIR_MIN_WIDTH_M = 0.6
 
 
 def stairs(model, scale, settings):
@@ -230,19 +230,19 @@ def stairs(model, scale, settings):
             width_m, width_source = float(width) * scale, "ifc_property"
         else:
             flight_widths = [min(d[0], d[1]) for fl in flights
-                             if (d := _element_bbox(fl, settings)) is not None]
+                             if (d := element_bbox(fl, settings)) is not None]
             if flight_widths:
                 width_m, width_source = min(flight_widths), "flight_geometry"
             else:
                 width_m, width_source = None, None
 
-        own = _element_bbox(stair, settings)
+        own = element_bbox(stair, settings)
         if width_m is None and own is not None:
             width_m, width_source = min(own[0], own[1]), "stair_geometry"
 
         is_egress_stair = bool(flights) or (
-            own is not None and own[2] > _STAIR_MIN_RISE_M
-            and width_m is not None and width_m >= _STAIR_MIN_WIDTH_M
+            own is not None and own[2] > STAIR_MIN_RISE_M
+            and width_m is not None and width_m >= STAIR_MIN_WIDTH_M
         )
         if not is_egress_stair:
             continue
@@ -262,7 +262,7 @@ def stair_flights(model, scale, settings=None):
         psets = util.get_psets(flight)
         width = find_property(psets, ["Width", "ClearWidth", "NominalWidth", "FlightWidth", "StairWidth"])
         going = rise = slope = None
-        d = _element_bbox(flight, settings) if settings is not None else None
+        d = element_bbox(flight, settings) if settings is not None else None
         if d:
             going, rise = max(d[0], d[1]), d[2]      
             slope = (going ** 2 + rise ** 2) ** 0.5

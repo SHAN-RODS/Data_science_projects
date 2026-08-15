@@ -28,13 +28,13 @@ STOREYS = [{"id": "S1", "name": "L1", "elevation_m": 0.0}]
 LEVELS = [{"id": "S1", "name": "L1", "elevation_m": 0.0}]
 
 
-def _rigid(degrees, dx, dy):
+def rigid_transform(degrees, dx, dy):
     theta = math.radians(degrees)
     c, s = math.cos(theta), math.sin(theta)
     return lambda g: affine_transform(g, [c, -s, s, c, dx, dy])
 
 
-def _spaces(rooms, transform):
+def sample_spaces(rooms, transform):
     out = []
     for name, geometry in rooms.items():
         moved = transform(geometry)
@@ -52,7 +52,7 @@ def _spaces(rooms, transform):
 ])
 def test_an_arbitrary_rigid_mismatch_is_solved_not_assumed(degrees, dx, dy):
     """Nothing about the angle is hardcoded, so any tilt is recovered from the model's own topology."""
-    spaces = _spaces(TRUE_ROOMS, _rigid(degrees, dx, dy))
+    spaces = sample_spaces(TRUE_ROOMS, rigid_transform(degrees, dx, dy))
     report = reconcile_space_frame(spaces, DOORS, LINKS, STOREYS)
 
     assert len(report) == 1
@@ -66,7 +66,7 @@ def test_an_arbitrary_rigid_mismatch_is_solved_not_assumed(degrees, dx, dy):
 
 def test_a_model_whose_frames_agree_is_left_untouched():
     """The correction can only fire when it demonstrably helps -- otherwise it is inert."""
-    spaces = _spaces(TRUE_ROOMS, lambda g: g)
+    spaces = sample_spaces(TRUE_ROOMS, lambda g: g)
     before = [(s["footprint"].wkt, s["centroid"]) for s in spaces]
 
     report = reconcile_space_frame(spaces, DOORS, LINKS, STOREYS)
@@ -77,7 +77,7 @@ def test_a_model_whose_frames_agree_is_left_untouched():
 
 
 def test_too_few_correspondences_abstains_rather_than_guessing():
-    spaces = _spaces(TRUE_ROOMS, _rigid(23.0, 11.0, -4.0))
+    spaces = sample_spaces(TRUE_ROOMS, rigid_transform(23.0, 11.0, -4.0))
     before = [s["footprint"].wkt for s in spaces]
 
     report = reconcile_space_frame(spaces, DOORS, {"D1": ["A", "B"]}, STOREYS)
@@ -90,7 +90,7 @@ def test_too_few_correspondences_abstains_rather_than_guessing():
 def test_a_storey_no_transform_explains_is_left_as_parsed():
     """Rooms scattered at random are not a rigid mismatch; the fit must decline, not invent one."""
     scattered = {"A": box(0, 0, 4, 3), "B": box(40, 80, 50, 83), "C": box(-70, 20, -56, 26)}
-    spaces = _spaces(scattered, lambda g: g)
+    spaces = sample_spaces(scattered, lambda g: g)
     before = [s["footprint"].wkt for s in spaces]
 
     report = reconcile_space_frame(spaces, DOORS, LINKS, STOREYS)
@@ -109,7 +109,7 @@ def test_correction_is_applied_to_rooms_that_have_no_doors_of_their_own():
     """An apartment zone carries no space boundary, so it contributes no pair -- but it still moves."""
     rooms = dict(TRUE_ROOMS)
     rooms["FLAT"] = FLAT
-    spaces = _spaces(rooms, _rigid(23.0, 11.0, -4.0))
+    spaces = sample_spaces(rooms, rigid_transform(23.0, 11.0, -4.0))
 
     reconcile_space_frame(spaces, DOORS, LINKS, STOREYS)
 
@@ -121,7 +121,7 @@ def test_orphan_rooms_get_a_geometric_door_link():
     """door_space_links is topological; a room with no IfcRelSpaceBoundary would never route out."""
     rooms = dict(TRUE_ROOMS)
     rooms["FLAT"] = FLAT
-    spaces = _spaces(rooms, lambda g: g)
+    spaces = sample_spaces(rooms, lambda g: g)
 
     augmented, added = augment_door_space_links(LINKS, spaces, DOORS, LEVELS)
 
@@ -136,7 +136,7 @@ def test_an_overlay_inside_a_connected_room_is_not_linked():
     """A turning circle already inherits its room's connectivity; it is not a place to escape from."""
     rooms = dict(TRUE_ROOMS)
     rooms["TURN"] = TURNING_CIRCLE
-    spaces = _spaces(rooms, lambda g: g)
+    spaces = sample_spaces(rooms, lambda g: g)
 
     augmented, added = augment_door_space_links(LINKS, spaces, DOORS, LEVELS)
 
@@ -145,7 +145,7 @@ def test_an_overlay_inside_a_connected_room_is_not_linked():
 
 
 def test_no_orphans_means_no_geometric_links_are_invented():
-    spaces = _spaces(TRUE_ROOMS, lambda g: g)
+    spaces = sample_spaces(TRUE_ROOMS, lambda g: g)
 
     augmented, added = augment_door_space_links(LINKS, spaces, DOORS, LEVELS)
 

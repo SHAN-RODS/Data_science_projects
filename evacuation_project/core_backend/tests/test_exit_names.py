@@ -13,7 +13,7 @@ from core_backend.scenario_generation_llm_1 import (ScenarioContent, assemble_sc
                                                   facts_block, spaces_block)
 
 
-def _exits():
+def sample_exits():
     """Deliberately stored east-to-west, so file order and plan order disagree."""
     return [
         {"id": "3uMBEvBYD33AT9ygIhdZHw", "name": "UO-2:UO-2.10+4x21:1419803", "width_m": 1.41,
@@ -26,37 +26,37 @@ def _exits():
 
 
 def test_exits_are_numbered_across_the_plan_not_in_file_order():
-    names = exit_names(_exits())
+    names = exit_names(sample_exits())
     assert names["0vwVLBnBr9meBshDw$RHGp"] == "Exit 1"
     assert names["3T$cyq5XDFhgqPE_ZtOXlr"] == "Exit 2"
     assert names["3uMBEvBYD33AT9ygIhdZHw"] == "Exit 3"
 
 
 def test_naming_is_stable_whatever_order_the_exits_arrive_in():
-    exits = _exits()
+    exits = sample_exits()
     assert exit_names(exits) == exit_names(list(reversed(exits)))
 
 
 def test_positionless_exits_still_get_a_name():
     """A fallback exit list carries no position; it must still be nameable, just numbered last."""
-    exits = _exits() + [{"id": "NOPOS", "name": "Unplaced door", "width_m": 0.9}]
+    exits = sample_exits() + [{"id": "NOPOS", "name": "Unplaced door", "width_m": 0.9}]
     assert exit_names(exits)["NOPOS"] == "Exit 4"
 
 
 def test_names_resolve_back_to_the_globalids_a_simulator_keys_on():
-    names = exit_names(_exits())
+    names = exit_names(sample_exits())
     assert resolve_exit_ids(["Exit 1", "exit 3"], names) == ["0vwVLBnBr9meBshDw$RHGp",
                                                             "3uMBEvBYD33AT9ygIhdZHw"]
 
 
 def test_a_globalid_still_resolves_so_older_objects_keep_working():
-    names = exit_names(_exits())
+    names = exit_names(sample_exits())
     assert resolve_exit_ids(["0vwVLBnBr9meBshDw$RHGp"], names) == ["0vwVLBnBr9meBshDw$RHGp"]
 
 
 def test_an_unknown_exit_is_kept_rather_than_silently_dropped():
     """A discounted exit that vanished from the list would read as open — the one failure to avoid."""
-    names = exit_names(_exits())
+    names = exit_names(sample_exits())
     assert resolve_exit_ids(["Exit 99"], names) == ["Exit 99"]
     assert named("Exit 99", names) == "Exit 99"
 
@@ -64,7 +64,7 @@ def test_an_unknown_exit_is_kept_rather_than_silently_dropped():
 def test_a_globalid_quoted_in_prose_is_rewritten_as_the_name():
     """Scenarios written before the rename quote GUIDs in their bottlenecks; reading one back must
     not put them in front of the user again."""
-    names = exit_names(_exits())
+    names = exit_names(sample_exits())
     scenario = {
         "narrative": "Occupants leave by 0vwVLBnBr9meBshDw$RHGp.",
         "bottlenecks": ["Exit 3uMBEvBYD33AT9ygIhdZHw (width: 1.41 m) may congest"],
@@ -79,7 +79,7 @@ def test_a_globalid_quoted_in_prose_is_rewritten_as_the_name():
 
 # ---- what the model is shown, and what comes back ---------------------------------------------------
 
-def _grounded():
+def sample_grounded():
     return {
         "spaces": [
             {"guid": "R1", "name": "Flat A", "long_name": None, "use_type": "dwelling",
@@ -94,11 +94,11 @@ def _grounded():
 
 def test_the_model_is_never_shown_an_exit_globalid():
     """The surest way to keep a GUID out of the AI's prose is to keep it out of the AI's facts."""
-    exits = _exits()
+    exits = sample_exits()
     names = exit_names(exits)
     facts = facts_block(
         {"project": "T", "storeys": 1, "total_floor_area_m2": 60.0, "total_occupant_load": 4},
-        _grounded(), exits, [], [{"name": "Ground", "elevation_m": 0.0,
+        sample_grounded(), exits, [], [{"name": "Ground", "elevation_m": 0.0,
                                   "height_above_ground_m": 0.0}], [],
         [{"exit_discounted": "3uMBEvBYD33AT9ygIhdZHw", "per_storey":
           [{"storey": "Ground", "occupants": 4, "max_travel_distance_m": 18.0, "unreachable": 0}]}],
@@ -111,20 +111,20 @@ def test_the_model_is_never_shown_an_exit_globalid():
 
 
 def test_the_object_carries_both_the_name_and_the_id():
-    names = exit_names(_exits())
-    block = exits_block(_exits(), names)
+    names = exit_names(sample_exits())
+    block = exits_block(sample_exits(), names)
     assert [e["exit_name"] for e in block] == ["Exit 1", "Exit 2", "Exit 3"]
     # the IFC's own label is kept so the door is still findable in the model
     assert block[0]["name"] == "O-1:O-1.10x21:1429543"
 
-    space = spaces_block(_grounded(), [], names)[0]
+    space = spaces_block(sample_grounded(), [], names)[0]
     assert space["nearest_exit_name"] == "Exit 1"
     assert space["nearest_exit"] == "0vwVLBnBr9meBshDw$RHGp"
 
 
 def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
     """The round trip in one step: what the model returns, and what the object ends up carrying."""
-    names = exit_names(_exits())
+    names = exit_names(sample_exits())
     content = ScenarioContent(
         type="one_exit_discounted", title="Exit 3 unavailable",
         purpose="shows what the loss of Exit 3 costs the Ground storey",
@@ -174,7 +174,7 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
 def test_the_population_is_seeded_into_the_occupancy_block_not_the_conditions():
     """occupants_total and occupancy_state are stated once. attach_occupancy() picks them up from
     there, so the conditions never carry a second copy to drift from."""
-    names = exit_names(_exits())
+    names = exit_names(sample_exits())
     content = ScenarioContent(
         type="night", title="Night", purpose="p",
         conditions={"exits_available": ["Exit 1"], "exits_discounted": [],
@@ -207,15 +207,15 @@ def test_the_population_is_seeded_into_the_occupancy_block_not_the_conditions():
 
 # ---- the record still closes the right door ---------------------------------------------------------
 
-def _obj_named():
+def named_object():
     """An object written the new way: conditions in names, with the resolved ids beside them."""
-    exits = _exits()
+    exits = sample_exits()
     names = exit_names(exits)
     return {
         "building": {"total_occupant_load": 4},
         "exits": exits_block(exits, names),
         "doors": [], "circulation": [], "elevators": [],
-        "spaces": spaces_block(_grounded(), [], names),
+        "spaces": spaces_block(sample_grounded(), [], names),
         "not_assessed": [],
         "scenarios": [
             {"id": "SCN-001", "type": "one_exit_discounted", "title": "Exit 3 unavailable",
@@ -236,7 +236,7 @@ def _obj_named():
 
 
 def test_a_scenario_written_in_names_closes_the_right_globalid():
-    obj = _obj_named()
+    obj = named_object()
     scn = obj["scenarios"][0]
     assert discounted_exit_ids(scn) == ["3uMBEvBYD33AT9ygIhdZHw"]
     assert available_exit_ids(scn) == ["0vwVLBnBr9meBshDw$RHGp", "3T$cyq5XDFhgqPE_ZtOXlr"]
@@ -246,13 +246,13 @@ def test_a_scenario_written_in_names_closes_the_right_globalid():
 
 
 def test_an_exit_name_the_model_invented_is_reported_not_ignored():
-    obj = _obj_named()
+    obj = named_object()
     obj["scenarios"][0]["scenario_objective"]["conditions"]["exits_discounted"] = ["Exit 9"]
     assert unknown_exit_references(obj) == [{"scenario": "SCN-001", "unknown_exits": ["Exit 9"]}]
 
 
 def test_an_object_written_before_names_existed_reports_nothing_unknown():
-    obj = _obj_named()
+    obj = named_object()
     scn = obj["scenarios"][0]
     conditions, routes = scn["scenario_objective"]["conditions"], scn["evacuation_routes"]
     routes["exits_available"] = routes.pop("exits_available_ifc_ids")

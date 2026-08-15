@@ -30,7 +30,7 @@ DISTANCE_METHOD = ("LLM-estimated approximate travel distance from each space's 
                    "storeys) — reasoned by the model over the supplied geometry, approximate and non-verdict")
 
 
-def _round(value, ndigits):
+def round_number(value, ndigits):
     return round(value, ndigits) if isinstance(value, (int, float)) else value
 
 
@@ -84,7 +84,7 @@ class BuildingAnalysis(BaseModel):
     scenarios: List[ScenarioContent] = Field(description="at least two: a base case + one or more degraded")
 
 
-_SYSTEM = (
+SYSTEM_PROMPT = (
     "You are a fire-safety engineer preparing whole-building evacuation SCENARIOS (the input description "
     "for egress analysis) — not a simulation and not a compliance verdict. You are given the building's "
     "extracted geometry (spaces with area/centroid/storey, final exits with positions, stairs, storeys). "
@@ -119,7 +119,7 @@ TASK = "Produce the BuildingAnalysis: per-space occupancy and distance, plus you
 # ---------------------------------------------------------------------------------------------------
 # Grounding: turn the parsed geometry into the facts the model reasons over.
 # ---------------------------------------------------------------------------------------------------
-def _spaces_for_llm(summary, classified):
+def spaces_for_llm(summary, classified):
     """Real (non-overlay) spaces with the geometry the model needs, one dict each."""
     use_type = {c["guid"]: c["use_type"] for c in classified}
     out = []
@@ -141,7 +141,7 @@ def _spaces_for_llm(summary, classified):
 
 def resolve_exits(summary, classified):
     """Ground-level final exits (geometry only). Falls back to all emergency exits if none sit at grade."""
-    _, _, final_exits = build_graph(summary, classified)
+    adjacency, positions, final_exits = build_graph(summary, classified)
     exits = list(final_exits.values())
     if exits:
         return exits
@@ -167,25 +167,25 @@ def facts_block(building, spaces, exits, stairs, storeys, reg_refs):
         "Storeys (name -> elevation / height above ground, metres):",
     ]
     for s in storeys:
-        lines.append(f"  - {s.get('name')}: elevation={_round(s.get('elevation_m'), 2)}, "
-                     f"height_above_ground={_round(s.get('height_above_ground_m'), 2)}")
+        lines.append(f"  - {s.get('name')}: elevation={round_number(s.get('elevation_m'), 2)}, "
+                     f"height_above_ground={round_number(s.get('height_above_ground_m'), 2)}")
     lines.append("")
     lines.append("Final (ground-level) exits — occupants leave by these ids:")
     for e in exits:
         p = e.get("position")
         pxyz = f"{p[0]:.1f},{p[1]:.1f},{p[2]:.1f}" if p else "n/a"
-        lines.append(f"  - {e['id']} (name={e.get('name')}, width_m={_round(e.get('width_m'), 2)}, at {pxyz})")
+        lines.append(f"  - {e['id']} (name={e.get('name')}, width_m={round_number(e.get('width_m'), 2)}, at {pxyz})")
     if stairs:
         lines.append("")
         lines.append("Internal stairs (connect storeys):")
         for st in stairs:
-            lines.append(f"  - {st['id']} (name={st.get('name')}, width_m={_round(st.get('width'), 2)})")
+            lines.append(f"  - {st['id']} (name={st.get('name')}, width_m={round_number(st.get('width'), 2)})")
     lines.append("")
     lines.append("Spaces (guid | use_type | area m2 | storey | name | centroid x,y,z):")
     for sp in spaces:
         c = sp["centroid"]
         cxyz = f"{c[0]:.1f},{c[1]:.1f},{c[2]:.1f}" if c else "n/a"
-        lines.append(f"  - {sp['guid']} | {sp['use_type']} | area={_round(sp['area_m2'], 1)} | "
+        lines.append(f"  - {sp['guid']} | {sp['use_type']} | area={round_number(sp['area_m2'], 1)} | "
                      f"storey={sp['storey']} | name={sp['name']!r} long_name={sp['long_name']!r} | "
                      f"centroid={cxyz}")
     if reg_refs:
@@ -225,11 +225,11 @@ def spaces_block(spaces_for_llm, classified, analysis_by_guid):
             "use_type_confidence": c.get("use_type_confidence"),
             "use_type_source": c.get("use_type_source"),
             "storey": sp["storey"],
-            "area_m2": _round(sp["area_m2"], 2),
+            "area_m2": round_number(sp["area_m2"], 2),
             "occupant_load": a.occupant_load if a else None,
             "occupant_basis": a.occupant_basis if a else None,
             "nearest_exit": (a.nearest_exit or None) if a else None,
-            "travel_distance_m": _round(a.travel_distance_m, 1) if (a and a.travel_distance_m is not None) else None,
+            "travel_distance_m": round_number(a.travel_distance_m, 1) if (a and a.travel_distance_m is not None) else None,
             "travel_distance_basis": a.travel_distance_basis if a else None,
             "reachable": a.reachable if a else False,
         })
@@ -237,13 +237,13 @@ def spaces_block(spaces_for_llm, classified, analysis_by_guid):
 
 
 def exits_block(exits):
-    return [{"id": e["id"], "name": e.get("name"), "type": "final_exit", "width_m": _round(e.get("width_m"), 2)}
+    return [{"id": e["id"], "name": e.get("name"), "type": "final_exit", "width_m": round_number(e.get("width_m"), 2)}
             for e in exits]
 
 
 def circulation_block(stairs):
     return [{"id": st["id"], "name": st.get("name"), "type": "internal_stair",
-             "width_m": _round(st.get("width"), 2)} for st in stairs]
+             "width_m": round_number(st.get("width"), 2)} for st in stairs]
 
 
 def assemble_scenario(sc):
@@ -268,7 +268,7 @@ def assemble_scenario(sc):
     }
 
 
-def _not_assessed(spaces_block):
+def not_assessed_rows(spaces_block):
     """Surface (never silently pass) spaces the model could not load or could not route out."""
     out = []
     for s in spaces_block:
@@ -291,7 +291,7 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
         llm, model_label = select_llm(max_tokens=16384,
                                       timeout=float(os.getenv("EVAC_GEN_TIMEOUT", "600")))
 
-    spaces_for_llm = _spaces_for_llm(summary, classified)
+    spaces_for_llm = spaces_for_llm(summary, classified)
     exits = resolve_exits(summary, classified)
     stairs = summary.get("stairs", [])
     storeys = summary.get("storeys", [])
@@ -300,7 +300,7 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
 
     reg_refs = reg_refs(jurisdiction)
     facts = facts_block(building, spaces_for_llm, exits, stairs, storeys, reg_refs)
-    prompt = f"{_SYSTEM}\n\n=== BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{TASK}"
+    prompt = f"{SYSTEM_PROMPT}\n\n=== BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{TASK}"
 
     # THE single API call: occupancy + distance + AI-chosen scenarios, all at once.
     analysis = llm.with_structured_output(BuildingAnalysis).invoke(prompt)
@@ -329,7 +329,7 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
         "scenarios": scenarios,
         "regulation_check": gate,
         "validation": {},
-        "not_assessed": _not_assessed(spaces_block),
+        "not_assessed": not_assessed_rows(spaces_block),
     }
 
 

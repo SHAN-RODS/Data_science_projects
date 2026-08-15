@@ -17,7 +17,7 @@ stair_max_dz_m = 4.0
 stair_max_dxy_m = 12.0        
 
 
-def _dist(a, b):
+def dist(a, b):
     if a is None or b is None:
         return None
     return math.sqrt(sum((p - q) ** 2 for p, q in zip(a, b)))
@@ -124,7 +124,7 @@ def path_distance(path, positions):
         if p is None:
             continue
         if previous is not None:
-            total += _dist(previous, p)
+            total += dist(previous, p)
         previous = p
     return total
 
@@ -167,7 +167,7 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
 
         on_dwelling = (sp["storey"] or {}).get("id") in dwelling_storeys
         occ = occupant_load(sp, ut, on_dwelling_storey=on_dwelling, jurisdiction=jurisdiction)
-        exit_id, bfs_distance, _ = nearest_exit(gid, adjacency, positions)
+        exit_id, bfs_distance, path = nearest_exit(gid, adjacency, positions)
 
         td = travel.get(gid)
         note = None

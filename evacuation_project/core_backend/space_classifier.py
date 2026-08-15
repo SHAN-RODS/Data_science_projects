@@ -139,7 +139,7 @@ class SpaceClassificationList(BaseModel):
 
 def llm_prompt(items):
     lines = [llm_instructions, "", "Spaces to classify:"]
-    for index, (_, sample) in enumerate(items):
+    for index, (guid, sample) in enumerate(items):
         area = sample.get("area")
         storey = (sample.get("storey") or {}).get("name")
         lines.append(
@@ -161,7 +161,7 @@ def classify_llm(unresolved, llm=None):
 
     if llm is None:
         from core_backend.llm import select_llm
-        llm, _ = select_llm()
+        llm, model_label = select_llm()
 
     try:
         structured = llm.with_structured_output(SpaceClassificationList)

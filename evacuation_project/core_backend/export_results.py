@@ -39,7 +39,7 @@ def ifc_elements(obj, scn):
     return elements
 
 
-def _occupancy(scn):
+def occupancy_summary(scn):
     occ = scn.get("occupancy") or {}
     return {
         "occupants_total": occ.get("occupants_total"),
@@ -130,7 +130,7 @@ def build_records(obj):
             "scenario": {
                 "scenario_objective": scn.get("scenario_objective", {}),
                 "evacuation_routes": scn.get("evacuation_routes", {}),
-                "occupancy": _occupancy(scn),
+                "occupancy": occupancy_summary(scn),
                 "occupant_distribution": scn.get("occupant_distribution", []),
                 "simulation_settings": simulation_settings(scn),
                 "pre_movement_time": pre_movement_time(scn),

@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from core_backend.scenario_generation_llm_1 import BuildingAnalysis, invoke_structured
 
 
-def _scenario(multiplier):
+def sample_scenario(multiplier):
     return {
         "id": "S1", "type": "base_case", "title": "Base", "purpose": "p",
         "conditions": {"exits_available": ["E"], "exits_discounted": [],
@@ -45,7 +45,7 @@ def _scenario(multiplier):
     }
 
 
-class _FakeLLM:
+class FakeLLM:
     """Returns the multiplier at each position of ``sequence``, sticking on the last one."""
 
     def __init__(self, sequence):
@@ -55,17 +55,17 @@ class _FakeLLM:
     def with_structured_output(self, model):
         llm = self
 
-        class _Structured:
+        class Structured:
             def invoke(self, prompt):
                 llm.prompts.append(prompt)
                 index = min(len(llm.prompts) - 1, len(llm.sequence) - 1)
-                return BuildingAnalysis(scenarios=[_scenario(llm.sequence[index])])
+                return BuildingAnalysis(scenarios=[sample_scenario(llm.sequence[index])])
 
-        return _Structured()
+        return Structured()
 
 
 def test_a_valid_reply_is_not_retried():
-    llm = _FakeLLM([1.0])
+    llm = FakeLLM([1.0])
 
     analysis = invoke_structured(llm, "PROMPT")
 
@@ -74,7 +74,7 @@ def test_a_valid_reply_is_not_retried():
 
 
 def test_an_out_of_range_multiplier_is_repaired_rather_than_losing_the_run():
-    llm = _FakeLLM([2.0, 1.0])          # rejected, then corrected
+    llm = FakeLLM([2.0, 1.0])          # rejected, then corrected
 
     analysis = invoke_structured(llm, "PROMPT")
 
@@ -87,7 +87,7 @@ def test_an_out_of_range_multiplier_is_repaired_rather_than_losing_the_run():
 
 def test_a_model_that_never_complies_still_fails_and_the_bound_holds():
     """The repair loop must not become a way to smuggle an invalid value through."""
-    llm = _FakeLLM([2.0])
+    llm = FakeLLM([2.0])
 
     with pytest.raises(ValidationError) as excinfo:
         invoke_structured(llm, "PROMPT")
@@ -98,7 +98,7 @@ def test_a_model_that_never_complies_still_fails_and_the_bound_holds():
 
 
 def test_attempts_are_bounded():
-    llm = _FakeLLM([2.0])
+    llm = FakeLLM([2.0])
 
     with pytest.raises(ValidationError):
         invoke_structured(llm, "PROMPT", attempts=2)

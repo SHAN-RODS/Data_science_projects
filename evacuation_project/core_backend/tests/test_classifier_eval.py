@@ -19,14 +19,14 @@ LABELLED_PATH = os.path.join(os.path.dirname(__file__), "labelled_spaces.json")
 MIN_ACCURACY = 0.85  # dictionary should resolve the labelled set well above chance
 
 
-def _load():
+def load_cases():
     with open(LABELLED_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def evaluate():
     """Return (accuracy, y_true, y_pred, labels) for the dictionary classifier."""
-    cases = _load()
+    cases = load_cases()
     y_true = [c["expected"] for c in cases]
     y_pred = [classify_name(c.get("long_name"), c.get("name"))[0] for c in cases]
     accuracy = accuracy_score(y_true, y_pred)
@@ -35,7 +35,7 @@ def evaluate():
 
 
 def test_classifier_accuracy():
-    accuracy, y_true, y_pred, _ = evaluate()
+    accuracy, y_true, y_pred, labels = evaluate()
     misses = [(t, p) for t, p in zip(y_true, y_pred) if t != p]
     assert accuracy >= MIN_ACCURACY, f"accuracy {accuracy:.3f} < {MIN_ACCURACY}; misses: {misses}"
 
@@ -52,7 +52,7 @@ if __name__ == "__main__":
         print(f"{label:<{width}}" + " ".join(f"{v:>7}" for v in row))
 
     misses = [(c["long_name"], c["name"], t, p)
-              for c, t, p in zip(_load(), y_true, y_pred) if t != p]
+              for c, t, p in zip(load_cases(), y_true, y_pred) if t != p]
     if misses:
         print(f"\nMisclassified ({len(misses)}):")
         for long_name, name, true, pred in misses:

@@ -85,7 +85,7 @@ def profile_sequence(profiles, total):
 NEAREST_AVAILABLE = "goto_nearest_available_exit"
 
 
-def _goal(space, discounted):
+def goal_for(space, discounted):
     exit_id = space.get("nearest_exit")
     if exit_id and exit_id not in discounted:
         return f"goto_{exit_id}"
@@ -96,7 +96,7 @@ def rerouted_rooms(obj, scenario):
     discounted = set(discounted_exit_ids(scenario))
     space_by_guid = {s["guid"]: s for s in obj.get("spaces", [])}
     return sorted(guid for guid in allocate_occupants(obj, scenario)
-                  if _goal(space_by_guid[guid], discounted) == NEAREST_AVAILABLE)
+                  if goal_for(space_by_guid[guid], discounted) == NEAREST_AVAILABLE)
 
 def why_unplaced(space, multipliers):
     if not space.get("reachable"):
@@ -128,7 +128,7 @@ def occupancy_block(obj, scenario):
         for name in sequence[taken:taken + n]:
             mix[name] = mix.get(name, 0) + 1
         taken += n
-        goal = _goal(space, discounted)
+        goal = goal_for(space, discounted)
         if goal == NEAREST_AVAILABLE:
             rerouted.append(guid)
         by_room.append({

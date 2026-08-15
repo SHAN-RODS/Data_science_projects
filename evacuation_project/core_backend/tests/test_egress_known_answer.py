@@ -16,7 +16,7 @@ from shapely.geometry import box
 from core_backend.egress import ground_spaces
 
 
-def _ground_storey():
+def ground_storey():
     return [{"id": "S1", "name": "Ground", "elevation_m": 0.0, "height_above_ground_m": 0.0}]
 
 
@@ -27,7 +27,7 @@ def test_rectangular_room_straight_line():
         "emergency_exits": [{"id": "E", "name": "Exit", "width_m": 1.0, "position": (3.0, 4.0, 0.0)}],
         "door_space_links": {"E": ["A"]},
         "stairs": [],
-        "storeys": _ground_storey(),
+        "storeys": ground_storey(),
     }
     classified = [{"guid": "A", "use_type": "living"}]
 
@@ -52,7 +52,7 @@ def test_l_corridor_exceeds_euclidean():
         "emergency_exits": [{"id": "E", "name": "Exit", "width_m": 1.0, "position": (10.0, 10.0, 0.0)}],
         "door_space_links": {"D1": ["A", "B"], "E": ["B"]},
         "stairs": [],
-        "storeys": _ground_storey(),
+        "storeys": ground_storey(),
     }
     classified = [{"guid": "A", "use_type": "living"}, {"guid": "B", "use_type": "circulation"}]
 
@@ -82,12 +82,12 @@ def test_equidistant_exits_tie_break_the_same_way_every_time():
         ],
         "door_space_links": {"E_NORTH": ["A"], "E_SOUTH": ["A"], "E_EAST": ["A"]},
         "stairs": [],
-        "storeys": _ground_storey(),
+        "storeys": ground_storey(),
     }
     classified = [{"guid": "A", "use_type": "living"}]
 
     chosen = {next(s for s in ground_spaces(summary, classified)["spaces"]
-                   if s["guid"] == "A")["nearest_exit"] for _ in range(5)}
+                   if s["guid"] == "A")["nearest_exit"] for attempt in range(5)}
     assert len(chosen) == 1
 
 
@@ -98,7 +98,7 @@ def test_unreachable_space_is_flagged():
         "emergency_exits": [],          # no exits at all
         "door_space_links": {},
         "stairs": [],
-        "storeys": _ground_storey(),
+        "storeys": ground_storey(),
     }
     classified = [{"guid": "X", "use_type": "living"}]
 
@@ -135,7 +135,7 @@ def test_a_failed_raster_never_overrides_a_route_the_graph_can_find():
         "door_space_links": {"E": ["A", "B"]},
         "stairs": [],
         "stair_flights": [],
-        "storeys": _ground_storey(),
+        "storeys": ground_storey(),
     }
     classified = [{"guid": "A", "use_type": "living"}, {"guid": "B", "use_type": "circulation"}]
 

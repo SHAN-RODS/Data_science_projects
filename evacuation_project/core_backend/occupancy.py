@@ -27,7 +27,7 @@ non_occupable = {"circulation", "stair", "plant", "sanitary", "measurement_zone"
 
 apartment_room_types = {"bedroom", "living", "kitchen", "kitchen_living", "dining", "sauna"}
 
-def _source(jurisdiction):
+def source_for(jurisdiction):
     return jurisdiction_source.get((jurisdiction or "england").lower(),
                                    jurisdiction_source["england"])
 
@@ -46,7 +46,7 @@ def dwelling_occupants(long_name):
 
 def occupant_load(space, use_type, on_dwelling_storey=False, jurisdiction="england"):
     area = space.get("area")
-    source = _source(jurisdiction)
+    source = source_for(jurisdiction)
 
     if use_type in non_occupable:
         return {"occupant_load": 0, "occupant_basis": f"non-occupiable ({use_type}); excluded from "

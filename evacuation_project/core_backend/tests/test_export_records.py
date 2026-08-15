@@ -16,7 +16,7 @@ SIX_KEYS = {"unique_id", "description", "relevant_ifc_element",
             "regulatory_justification", "ai_explanation", "scenario"}
 
 
-def _simulation():
+def sample_simulation():
     return {
         "movement_model": "steering",
         "simulation_settings": {
@@ -39,7 +39,7 @@ def _simulation():
     }
 
 
-def _fire(origin="Office", affected_exits=()):
+def sample_fire(origin="Office", affected_exits=()):
     return {
         "fire_origin": origin,
         "fire_origin_storey": "G",
@@ -51,7 +51,7 @@ def _fire(origin="Office", affected_exits=()):
     }
 
 
-def _obj():
+def sample_object():
     return {
         "model": {"source_ifc": "t.ifc", "units": "m",
                   "coordinate_system": "ifc_world_coordinates"},
@@ -83,8 +83,8 @@ def _obj():
                  "restricted_areas": []},
              "occupancy": {"occupants_total": 20, "occupancy_state": "night"},
              "occupant_distribution": ["G: 20"], "assumptions": ["all exits usable"],
-             "bottlenecks": [], "risks": [], "narrative": "All leave.", "simulation": _simulation(),
-             "fire_conditions": _fire(),
+             "bottlenecks": [], "risks": [], "narrative": "All leave.", "simulation": sample_simulation(),
+             "fire_conditions": sample_fire(),
              "regulatory_justification": "ENG-R11/R12", "ai_explanation": "baseline"},
             {"id": "SCN-EXIT-BLOCKED", "type": "one_exit_discounted", "title": "One exit discounted",
              "scenario_objective": {"purpose": "tests resilience to losing the front door",
@@ -96,14 +96,14 @@ def _obj():
              "occupancy": {"occupants_total": 20, "occupancy_state": "night"},
              "occupant_distribution": ["G: 20"], "assumptions": ["E1 blocked"],
              "bottlenecks": ["E2"], "risks": ["congestion"], "narrative": "Reroute.",
-             "simulation": _simulation(), "fire_conditions": _fire("Store", affected_exits=["E1"]),
+             "simulation": sample_simulation(), "fire_conditions": sample_fire("Store", affected_exits=["E1"]),
              "regulatory_justification": "ADB discounted-exit principle", "ai_explanation": "resilience"},
         ],
     }
 
 
 def test_one_record_per_scenario_with_six_keys():
-    recs = build_records(_obj())
+    recs = build_records(sample_object())
     assert len(recs) == 2
     for r in recs:
         assert set(r.keys()) == SIX_KEYS
@@ -111,12 +111,12 @@ def test_one_record_per_scenario_with_six_keys():
 
 def test_records_are_numbered_scn_001_upwards():
     """The deliverable numbers its own records, whatever ids the object happens to carry."""
-    recs = build_records(_obj())
+    recs = build_records(sample_object())
     assert [r["unique_id"] for r in recs] == ["SCN-001", "SCN-002"]
 
 
 def test_relevantifc_elements_resolve_real_ids():
-    recs = build_records(_obj())
+    recs = build_records(sample_object())
     blocked = next(r for r in recs if r["unique_id"] == "SCN-002")
     ids = {e["id"] for e in blocked["relevant_ifc_element"]}
     assert {"E1", "E2", "ST1"} <= ids                       # available + discounted exits + stair
@@ -126,7 +126,7 @@ def test_relevantifc_elements_resolve_real_ids():
 
 
 def test_scenario_body_is_nested():
-    recs = build_records(_obj())
+    recs = build_records(sample_object())
     base = recs[0]
     assert base["scenario"]["occupancy"]["occupants_total"] == 20
     assert base["scenario"]["scenario_objective"]["conditions"]["exits_discounted"] == []
@@ -135,7 +135,7 @@ def test_scenario_body_is_nested():
 # ---- the record as a simulation input --------------------------------------------------------------
 
 def testifc_elements_cover_doors_stairs_and_lifts_with_a_state():
-    recs = build_records(_obj())
+    recs = build_records(sample_object())
     kinds = {e["id"]: e["kind"] for e in recs[0]["relevant_ifc_element"]}
     assert kinds == {"E1": "final_exit", "E2": "final_exit", "D1": "internal_door",
                      "ST1": "stair", "LIFT1": "elevator"}
@@ -146,13 +146,13 @@ def testifc_elements_cover_doors_stairs_and_lifts_with_a_state():
 def test_geometry_the_simulator_reads_from_the_ifc_is_not_repeated_here():
     """``position`` and ``connects`` come with the geometry on IFC import, keyed on the same
     GlobalId — repeating them in the record only invites the two copies to disagree."""
-    for element in build_records(_obj())[0]["relevant_ifc_element"]:
+    for element in build_records(sample_object())[0]["relevant_ifc_element"]:
         assert "position" not in element
         assert "connects" not in element
 
 
 def test_a_discounted_exit_is_closed_in_that_scenario_only():
-    recs = {r["unique_id"]: r for r in build_records(_obj())}
+    recs = {r["unique_id"]: r for r in build_records(sample_object())}
     base = {e["id"]: e["state"] for e in recs["SCN-001"]["relevant_ifc_element"]}
     blocked = {e["id"]: e["state"] for e in recs["SCN-002"]["relevant_ifc_element"]}
     assert base["E1"] == base["E2"] == "open"
@@ -163,7 +163,7 @@ def test_the_raw_simulation_block_is_not_shipped_verbatim():
     """The record carries the parameters a study needs under named keys — simulation_settings,
     pre_movement_time, movement_characteristic and evacuation_time — not the whole internal
     simulation block with its working."""
-    obj = _obj()
+    obj = sample_object()
     assert obj["scenarios"][0]["simulation"]                    # still generated and validated
     for rec in build_records(obj):
         assert "simulation" not in rec["scenario"]
@@ -178,7 +178,7 @@ def test_the_record_body_is_the_slim_set_of_fields():
     body = {"scenario_objective", "evacuation_routes", "occupancy", "occupant_distribution",
             "simulation_settings", "pre_movement_time", "movement_characteristic",
             "evacuation_time", "fire_related_conditions", "assumptions", "bottlenecks", "risks"}
-    for rec in build_records(_obj()):
+    for rec in build_records(sample_object()):
         assert set(rec["scenario"].keys()) == body
 
 
@@ -187,7 +187,7 @@ def test_the_record_body_is_the_slim_set_of_fields():
 def test_pre_movement_time_ships_as_a_distribution():
     """Pre-movement is often the largest term in total evacuation time; a single number loses the
     spread, so the response delay carries the distribution and the basis behind it."""
-    pre = build_records(_obj())[0]["scenario"]["pre_movement_time"]
+    pre = build_records(sample_object())[0]["scenario"]["pre_movement_time"]
     assert pre["response_delay"] == {"distribution": "normal", "mean_s": 60.0, "sd_s": 30.0,
                                      "basis": "alert occupants, staff-assisted"}
 
@@ -195,13 +195,13 @@ def test_pre_movement_time_ships_as_a_distribution():
 def test_pre_movement_time_breaks_the_clock_into_its_four_parts():
     """Total pre-movement is detection + alarm + recognition + response. A study that ships only the
     response delay cannot say what its clock started from."""
-    pre = build_records(_obj())[0]["scenario"]["pre_movement_time"]
+    pre = build_records(sample_object())[0]["scenario"]["pre_movement_time"]
     assert set(pre) == {"detection", "alarm", "recognition", "response_delay"}
     assert all(pre[part] for part in ("detection", "alarm", "recognition"))
 
 
 def test_simulation_settings_carry_the_starting_state_and_the_run_length():
-    settings = build_records(_obj())[0]["scenario"]["simulation_settings"]
+    settings = build_records(sample_object())[0]["scenario"]["simulation_settings"]
     assert settings["start_conditions"]
     assert settings["duration"] == {"seconds": 900.0, "basis": "long enough to clear the building"}
 
@@ -209,14 +209,14 @@ def test_simulation_settings_carry_the_starting_state_and_the_run_length():
 def test_evacuation_time_is_labelled_an_estimate_not_a_result():
     """The figure is the AI's arithmetic, stated before the run. A reader who mistakes it for the
     Pathfinder result would be reading an unmeasured number as a measured one."""
-    estimate = build_records(_obj())[0]["scenario"]["evacuation_time"]
+    estimate = build_records(sample_object())[0]["scenario"]["evacuation_time"]
     assert estimate["estimated_total_s"] == 300.0
     assert estimate["basis"]
     assert "not a simulation result" in estimate["source"]
 
 
 def test_movement_characteristic_carries_the_model_and_the_profile_mix():
-    movement = build_records(_obj())[0]["scenario"]["movement_characteristic"]
+    movement = build_records(sample_object())[0]["scenario"]["movement_characteristic"]
     assert movement["movement_model"] == "steering"
     profile = movement["profiles"][0]
     assert profile["speed_ms_mean"] == 1.19
@@ -226,7 +226,7 @@ def test_movement_characteristic_carries_the_model_and_the_profile_mix():
 
 
 def test_fire_related_conditions_carry_origin_detection_and_smoke():
-    fire = build_records(_obj())[1]["scenario"]["fire_related_conditions"]
+    fire = build_records(sample_object())[1]["scenario"]["fire_related_conditions"]
     assert fire["fire_origin"] == "Store"
     assert fire["affected_exits"] == ["E1"]                     # the exit this scenario discounts
     assert fire["detection_and_alarm"] and fire["smoke_conditions"] and fire["basis"]
@@ -234,7 +234,7 @@ def test_fire_related_conditions_carry_origin_detection_and_smoke():
 
 def test_the_three_blocks_survive_a_scenario_that_never_got_them():
     """A hand-edited or older object must export a shaped block, not blow up or drop the key."""
-    obj = _obj()
+    obj = sample_object()
     del obj["scenarios"][0]["simulation"]
     del obj["scenarios"][0]["fire_conditions"]
     body = build_records(obj)[0]["scenario"]
@@ -246,7 +246,7 @@ def test_the_three_blocks_survive_a_scenario_that_never_got_them():
 
 
 def test_occupancy_is_the_headline_total_and_state_only():
-    for rec in build_records(_obj()):
+    for rec in build_records(sample_object()):
         occupancy = rec["scenario"]["occupancy"]
         assert occupancy == {"occupants_total": 20, "occupancy_state": "night"}
 
@@ -254,7 +254,7 @@ def test_occupancy_is_the_headline_total_and_state_only():
 def test_the_population_is_stated_once_not_beside_the_conditions():
     """occupants_total and occupancy_state belong to the occupancy block. Repeating them in the
     conditions gives the record two copies that can drift apart."""
-    for rec in build_records(_obj()):
+    for rec in build_records(sample_object()):
         conditions = rec["scenario"]["scenario_objective"]["conditions"]
         assert "occupants_total" not in conditions
         assert "occupancy_state" not in conditions
@@ -263,7 +263,7 @@ def test_the_population_is_stated_once_not_beside_the_conditions():
 def test_routes_and_available_exits_sit_under_evacuation_routes():
     """Where people may go is one subject: the exits left open, the paths to them, and the areas
     they must keep out of."""
-    body = build_records(_obj())[1]["scenario"]
+    body = build_records(sample_object())[1]["scenario"]
     assert "routes" not in body                                  # not a loose sibling key
     routes = body["evacuation_routes"]
     assert routes["exits_available"] == ["E2"]
@@ -274,7 +274,7 @@ def test_routes_and_available_exits_sit_under_evacuation_routes():
 
 def test_the_deliverable_is_json_all_the_way_down():
     """The project's output format is JSON — nothing may be smuggled out as delimited text."""
-    payload = export_records(_obj())
+    payload = export_records(sample_object())
     records = json.loads(payload)                      # must parse as JSON on its own
 
     def leaves(node):

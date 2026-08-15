@@ -116,7 +116,7 @@ def resolve_storey(space):
     return None
 
 
-def _nearest_storey(z, storey_levels):
+def nearest_storey(z, storey_levels):
     if z is None or not storey_levels:
         return None
     return min(storey_levels, key=lambda s: abs(s["elevation_m"] - z))
@@ -156,7 +156,7 @@ def space_extract(model, scale, settings, storey_levels):
         else:
             if raw is not None:
                 centroid = raw
-                near = _nearest_storey(raw[2], storey_levels)
+                near = nearest_storey(raw[2], storey_levels)
                 if near is not None:
                     storey = {"id": near["id"], "name": near["name"]}
 
@@ -203,7 +203,7 @@ def doors(model, scale):
         })
     return results
 
-def _element_bbox(element, settings):
+def element_bbox(element, settings):
     try:
         shape = geom_util.create_shape(settings, element)
         verts = shape.geometry.verts
@@ -229,13 +229,13 @@ def stairs(model, scale, settings):
             width_m, width_source = float(width) * scale, "ifc_property"
         else:
             flight_widths = [min(d[0], d[1]) for fl in flights
-                             if (d := _element_bbox(fl, settings)) is not None]
+                             if (d := element_bbox(fl, settings)) is not None]
             if flight_widths:
                 width_m, width_source = min(flight_widths), "flight_geometry"
             else:
                 width_m, width_source = None, None
 
-        own = _element_bbox(stair, settings)
+        own = element_bbox(stair, settings)
         if width_m is None and own is not None:
             width_m, width_source = min(own[0], own[1]), "stair_geometry"
 
@@ -262,7 +262,7 @@ def stair_flights(model, scale, settings=None):
         psets = util.get_psets(flight)
         width = find_property(psets, ["Width", "ClearWidth", "NominalWidth", "FlightWidth", "StairWidth"])
         going = rise = slope = None
-        d = _element_bbox(flight, settings) if settings is not None else None
+        d = element_bbox(flight, settings) if settings is not None else None
         if d:
             going, rise = max(d[0], d[1]), d[2]      
             slope = (going ** 2 + rise ** 2) ** 0.5
@@ -532,8 +532,8 @@ def frame_agreement(entries, transform=None):
     return sum(1 for g in gaps if g <= FRAME_INLIER_M), median(gaps)
 
 def sweep_rotation(entries):
-    centroids = [(p.centroid.x, p.centroid.y) for p, _ in entries]
-    targets = [d for _, d in entries]
+    centroids = [(p.centroid.x, p.centroid.y) for p, target in entries]
+    targets = [target for polygon, target in entries]
     best = None
     steps = int(round(360.0 / FRAME_SWEEP_DEG))
     for step in range(steps):
@@ -683,7 +683,7 @@ def reconcile_space_frame(spaces, doors, links, storeys):
 
 OVERLAY_COVERED_SHARE = 0.9   
 
-def _is_overlay_of_a_connected_room(space, connected):
+def is_overlay_of_a_connected_room(space, connected):
     area = space["footprint"].area
     if area <= 0:
         return True
@@ -707,7 +707,7 @@ def augment_door_space_links(links, spaces, doors, levels, tolerance_m=0.3):
                if s["id"] not in linked and s.get("footprint") is not None and s.get("storey")]
     connected = [s for s in spaces
                  if s["id"] in linked and s.get("footprint") is not None and s.get("storey")]
-    orphans = [s for s in orphans if not _is_overlay_of_a_connected_room(s, connected)]
+    orphans = [s for s in orphans if not is_overlay_of_a_connected_room(s, connected)]
     if not orphans:
         return links, 0
 
@@ -718,7 +718,7 @@ def augment_door_space_links(links, spaces, doors, levels, tolerance_m=0.3):
         position = door.get("position")
         if position is None:
             continue
-        near = _nearest_storey(position[2], levels)
+        near = nearest_storey(position[2], levels)
         if near is None:
             continue
         point = Point(position[0], position[1])

@@ -32,13 +32,13 @@ DISTANCE_METHOD = ("geodesic shortest path over a per-storey walkable raster (0.
 DISCOUNT_VARIANTS = int(os.getenv("EVAC_DISCOUNT_VARIANTS", "2"))
 
 
-def _round(value, ndigits):
+def round_number(value, ndigits):
     return round(value, ndigits) if isinstance(value, (int, float)) else value
 
 
 # ---------------------------------------------------------------------------------------------------
 # What the single API call returns: the AI-chosen scenario set, in the SCN-001 shape.
-# The numbers (occupant loads, travel distances) are NOT the model's job — see _SYSTEM below.
+# The numbers (occupant loads, travel distances) are NOT the model's job — see SYSTEM_PROMPT below.
 # ---------------------------------------------------------------------------------------------------
 class FireScenario(BaseModel):
     fire_origin: Optional[str] = Field(default=None, description="space/area where the fire starts, "
@@ -122,7 +122,7 @@ class BuildingAnalysis(BaseModel):
                     "computed travel distances — not chosen at random.")
 
 
-_SYSTEM = (
+SYSTEM_PROMPT = (
     "You are a fire-safety engineer preparing whole-building evacuation SCENARIOS (the input description "
     "for egress analysis) — not a simulation and not a compliance verdict.\n\n"
     "IMPORTANT — the numbers are already done. Occupant loads and travel distances below were COMPUTED "
@@ -189,7 +189,7 @@ def resolve_exits(summary, classified, grounded):
     exits = list(grounded["final_exits"])
     if exits:
         return exits
-    _, _, final_exits = build_graph(summary, classified)
+    adjacency, positions, final_exits = build_graph(summary, classified)
     if final_exits:
         return list(final_exits.values())
     return [{"id": d["id"], "name": d.get("name"), "width_m": d.get("width_m"),
@@ -233,7 +233,7 @@ def degraded_cases(summary, classified, grounded, jurisdiction, limit=DISCOUNT_V
         return []
     usage = Counter(s["nearest_exit"] for s in grounded["spaces"] if s["nearest_exit"])
     cases = []
-    for exit_id, _count in usage.most_common(limit):
+    for exit_id, usage_count in usage.most_common(limit):
         variant = discount_exit(summary, classified, exit_id, jurisdiction=jurisdiction)
         cases.append({
             "exit_discounted": exit_id,
@@ -258,17 +258,17 @@ def facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded):
         "Storeys (name -> elevation / height above ground, metres):",
     ]
     for s in storeys:
-        lines.append(f"  - {s.get('name')}: elevation={_round(s.get('elevation_m'), 2)}, "
-                     f"height_above_ground={_round(s.get('height_above_ground_m'), 2)}")
+        lines.append(f"  - {s.get('name')}: elevation={round_number(s.get('elevation_m'), 2)}, "
+                     f"height_above_ground={round_number(s.get('height_above_ground_m'), 2)}")
 
     lines += ["", "Final (ground-level) exits — occupants leave by these ids:"]
     for e in exits:
-        lines.append(f"  - {e['id']} (name={e.get('name')}, width_m={_round(e.get('width_m'), 2)})")
+        lines.append(f"  - {e['id']} (name={e.get('name')}, width_m={round_number(e.get('width_m'), 2)})")
 
     if stairs:
         lines += ["", "Internal stairs (connect storeys):"]
         for st in stairs:
-            lines.append(f"  - {st['id']} (name={st.get('name')}, width_m={_round(st.get('width'), 2)})")
+            lines.append(f"  - {st['id']} (name={st.get('name')}, width_m={round_number(st.get('width'), 2)})")
 
     lines += ["", "BASE-CASE per-storey rollup (computed — occupants / spaces / longest travel "
                   "distance m / unreachable):"]
@@ -290,7 +290,7 @@ def facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded):
     for s in spaces:
         storey = (s["storey"] or {}).get("name")
         lines.append(f"  - {s['guid']} | {s['use_type']} | storey={storey} | "
-                     f"area={_round(s['area_m2'], 1)} | occupants={s['occupant_load']} | "
+                     f"area={round_number(s['area_m2'], 1)} | occupants={s['occupant_load']} | "
                      f"travel_m={s['travel_distance_m']} | exit={s['nearest_exit']} | "
                      f"name={s['name']!r}")
 
@@ -345,13 +345,13 @@ def spaces_block(grounded, classified):
             "use_type_confidence": c.get("use_type_confidence"),
             "use_type_source": c.get("use_type_source"),
             "storey": (s["storey"] or {}).get("name"),
-            "area_m2": _round(s["area_m2"], 2),
+            "area_m2": round_number(s["area_m2"], 2),
             # where a simulator seeds this room's occupants (metres, IFC world coords)
-            "centroid": [_round(v, 2) for v in s["centroid"]] if s["centroid"] else None,
+            "centroid": [round_number(v, 2) for v in s["centroid"]] if s["centroid"] else None,
             "occupant_load": s["occupant_load"],
             "occupant_basis": s["occupant_basis"],
             "nearest_exit": s["nearest_exit"],
-            "travel_distance_m": _round(s["travel_distance_m"], 1),
+            "travel_distance_m": round_number(s["travel_distance_m"], 1),
             "travel_distance_method": s.get("travel_distance_method"),
             "most_remote_point": s.get("most_remote_point"),
             "reachable": s["reachable"],
@@ -360,14 +360,14 @@ def spaces_block(grounded, classified):
     return out
 
 
-def _point(p):
+def point(p):
     """A position tuple as a plain JSON array of metres, or None."""
-    return [_round(v, 2) for v in p] if p else None
+    return [round_number(v, 2) for v in p] if p else None
 
 
 def exits_block(exits):
     return [{"id": e["id"], "name": e.get("name"), "type": "final_exit",
-             "width_m": _round(e.get("width_m"), 2), "position": _point(e.get("position"))}
+             "width_m": round_number(e.get("width_m"), 2), "position": point(e.get("position"))}
             for e in exits]
 
 
@@ -399,9 +399,9 @@ def circulation_block(summary):
         spans = list(dict.fromkeys(s for s in spans if s))      # de-dup, keep base-then-top order
         out.append({
             "id": st["id"], "name": st.get("name"), "type": "internal_stair",
-            "width_m": _round(st.get("width"), 2), "width_source": st.get("width_source"),
-            "position": _point(position),
-            "rise_m": _round(rise, 2), "going_m": _round(going, 2), "slope_m": _round(slope, 2),
+            "width_m": round_number(st.get("width"), 2), "width_source": st.get("width_source"),
+            "position": point(position),
+            "rise_m": round_number(rise, 2), "going_m": round_number(going, 2), "slope_m": round_number(slope, 2),
             "connects_storeys": spans,
         })
     return out
@@ -421,14 +421,14 @@ def doors_block(summary, exits):
     final = {e["id"] for e in exits}
     links = summary.get("door_space_links", {})
     return [{"id": d["id"], "name": d.get("name"), "type": "internal_door",
-             "width_m": _round(d.get("width_m"), 2), "position": _point(d.get("position")),
+             "width_m": round_number(d.get("width_m"), 2), "position": point(d.get("position")),
              "connects": links.get(d["id"], [])}
             for d in summary.get("doors", []) if d["id"] not in final]
 
 
 def elevators_block(summary):
     return [{"id": t["id"], "name": t.get("name"), "type": "elevator",
-             "is_evac_lift": t.get("is_evac_lift"), "position": _point(t.get("position"))}
+             "is_evac_lift": t.get("is_evac_lift"), "position": point(t.get("position"))}
             for t in summary.get("elevators", [])]
 
 
@@ -518,7 +518,7 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
     # ---- the single API call: which scenarios are worth generating, and their write-up ----------
     reg_refs = reg_refs(jurisdiction)
     facts = facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded)
-    prompt = f"{_SYSTEM}\n\n=== COMPUTED BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{TASK}"
+    prompt = f"{SYSTEM_PROMPT}\n\n=== COMPUTED BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{TASK}"
 
     analysis = invoke_structured(llm, prompt)
 

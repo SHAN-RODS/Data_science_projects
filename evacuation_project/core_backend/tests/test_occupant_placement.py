@@ -13,7 +13,7 @@ from core_backend.occupant_placement import (allocate_occupants, attach_occupanc
                                              rerouted_rooms, scenario_occupancy)
 
 
-def _simulation(multipliers=None):
+def sample_simulation(multipliers=None):
     return {
         "movement_model": "steering",
         "simulation_settings": {
@@ -42,7 +42,7 @@ def _simulation(multipliers=None):
     }
 
 
-def _obj():
+def sample_object():
     return {
         "schema_version": "1.0",
         "model": {"source_ifc": "t.ifc", "units": "m", "coordinate_system": "ifc_world_coordinates"},
@@ -95,7 +95,7 @@ def _obj():
                                    "restricted_areas": []},
              "occupancy": {"occupants_total": 12, "occupancy_state": "peak occupancy"},
              "assumptions": [], "occupant_distribution": [], "bottlenecks": [],
-             "risks": [], "narrative": "All leave.", "simulation": _simulation(),
+             "risks": [], "narrative": "All leave.", "simulation": sample_simulation(),
              "regulatory_justification": "ENG-R11", "ai_explanation": "baseline"},
             {"id": "SCN-NIGHT", "type": "night_one_exit_discounted", "title": "Night, rear exit lost",
              "scenario_objective": {"purpose": "loss of the rear exit at night",
@@ -105,7 +105,7 @@ def _obj():
              "occupancy": {"occupants_total": 9, "occupancy_state": "night"},
              "assumptions": [], "occupant_distribution": [], "bottlenecks": [],
              "risks": [], "narrative": "Shop is closed.",
-             "simulation": _simulation([{"use_type": "commercial", "multiplier": 0.0,
+             "simulation": sample_simulation([{"use_type": "commercial", "multiplier": 0.0,
                                          "reason": "shop shut at night"},
                                         {"use_type": "dwelling", "multiplier": 1.0,
                                          "reason": "residents at home"}]),
@@ -120,7 +120,7 @@ def _obj():
     }
 
 
-def _scenario(obj, sid):
+def scenario_by_id(obj, sid):
     return next(s for s in obj["scenarios"] if s["id"] == sid)
 
 
@@ -128,7 +128,7 @@ def _scenario(obj, sid):
 
 def test_allocation_conserves_the_scenario_total():
     """placed + unplaced + unallocated == occupants_total: nobody is invented, nobody disappears."""
-    obj = _obj()
+    obj = sample_object()
     for scn in obj["scenarios"]:
         placed, unplaced, unallocated = scenario_occupancy(obj, scn)
         assert (sum(placed.values()) + sum(unplaced.values()) + unallocated
@@ -136,7 +136,7 @@ def test_allocation_conserves_the_scenario_total():
 
 
 def test_unreachable_room_is_never_seeded():
-    obj = _obj()
+    obj = sample_object()
     for scn in obj["scenarios"]:
         assert "STORE" not in allocate_occupants(obj, scn)
 
@@ -144,8 +144,8 @@ def test_unreachable_room_is_never_seeded():
 def test_unreachable_occupants_are_reported_not_redistributed():
     """The regression that matters: a sealed room's occupants must not be poured into the rooms that
     can escape — that would hand the simulation rooms holding far more people than they hold."""
-    obj = _obj()
-    placed, unplaced, _ = scenario_occupancy(obj, _scenario(obj, "SCN-BASE"))
+    obj = sample_object()
+    placed, unplaced, unallocated = scenario_occupancy(obj, scenario_by_id(obj, "SCN-BASE"))
 
     assert unplaced == {"STORE": 2}
     assert sum(placed.values()) == 10           # 12 asked for, 2 of them sealed in STORE
@@ -155,16 +155,16 @@ def test_unreachable_occupants_are_reported_not_redistributed():
 
 
 def test_multipliers_empty_the_shop_at_night():
-    obj = _obj()
-    night = allocate_occupants(obj, _scenario(obj, "SCN-NIGHT"))
+    obj = sample_object()
+    night = allocate_occupants(obj, scenario_by_id(obj, "SCN-NIGHT"))
     assert "SHOP" not in night                      # commercial multiplier 0.0
     assert set(night) == {"FLAT_A", "FLAT_B"}       # only the dwellings are seeded
 
 
 def test_largest_remainder_handles_a_total_that_does_not_divide_evenly():
     # weights 4 : 3 : 5 : 2 over a total of 12 does not divide evenly -> remainders decide the split
-    obj = _obj()
-    placed, unplaced, unallocated = scenario_occupancy(obj, _scenario(obj, "SCN-BASE"))
+    obj = sample_object()
+    placed, unplaced, unallocated = scenario_occupancy(obj, scenario_by_id(obj, "SCN-BASE"))
     assert all(isinstance(n, int) and n > 0 for n in {**placed, **unplaced}.values())
     assert set(placed) == {"FLAT_A", "SHOP", "FLAT_B"}
     assert unallocated == 0                     # 12 asked for, 14 of room capacity
@@ -174,8 +174,8 @@ def test_no_room_is_ever_given_more_people_than_it_can_hold():
     """The scenario total is the AI's; the room capacities are computed. When the first exceeds the
     second, scaling every room up to meet it seats people in rooms that do not hold them — on the real
     model a night scenario asking for 50 against a capacity of 35 put 4 people in a 3-person sauna."""
-    obj = _obj()
-    scn = _scenario(obj, "SCN-NIGHT")
+    obj = sample_object()
+    scn = scenario_by_id(obj, "SCN-NIGHT")
     # at night the dwellings (4 + 5) and the sealed store (2) are all that stay occupied: capacity 11
     scn["occupancy"]["occupants_total"] = 20
 
@@ -192,7 +192,7 @@ def test_no_room_is_ever_given_more_people_than_it_can_hold():
 
 
 def test_nothing_is_unallocated_when_the_total_fits():
-    obj = _obj()
+    obj = sample_object()
     for scn in obj["scenarios"]:
         block = occupancy_block(obj, scn)
         assert block["unallocated_total"] == 0
@@ -202,8 +202,8 @@ def test_nothing_is_unallocated_when_the_total_fits():
 # ---- the per-room occupancy block ------------------------------------------------------------------
 
 def test_every_seeded_room_has_a_seed_point_and_a_real_goal():
-    obj = _obj()
-    scn = _scenario(obj, "SCN-BASE")
+    obj = sample_object()
+    scn = scenario_by_id(obj, "SCN-BASE")
     block = occupancy_block(obj, scn)
     centroids = {s["guid"]: s["centroid"] for s in obj["spaces"]}
     exit_ids = {e["id"] for e in obj["exits"]}
@@ -218,15 +218,15 @@ def test_every_seeded_room_has_a_seed_point_and_a_real_goal():
 
 
 def test_per_room_profile_counts_sum_to_that_rooms_occupants():
-    obj = _obj()
-    block = occupancy_block(obj, _scenario(obj, "SCN-BASE"))
+    obj = sample_object()
+    block = occupancy_block(obj, scenario_by_id(obj, "SCN-BASE"))
     for room in block["by_room"]:
         assert sum(room["profiles"].values()) == room["occupants"]
 
 
 def test_profile_mix_matches_the_requested_fractions():
-    obj = _obj()
-    block = occupancy_block(obj, _scenario(obj, "SCN-BASE"))
+    obj = sample_object()
+    block = occupancy_block(obj, scenario_by_id(obj, "SCN-BASE"))
     totals = {}
     for room in block["by_room"]:
         for name, n in room["profiles"].items():
@@ -240,8 +240,8 @@ def test_profile_mix_matches_the_requested_fractions():
 def test_profile_mix_is_spread_across_rooms_not_clustered():
     """The sequence is consumed room by room, so a grouped one would park every slower occupant in the
     last room and skew the egress time."""
-    obj = _obj()
-    block = occupancy_block(obj, _scenario(obj, "SCN-BASE"))
+    obj = sample_object()
+    block = occupancy_block(obj, scenario_by_id(obj, "SCN-BASE"))
     rooms_with_slow = [r["guid"] for r in block["by_room"] if r["profiles"].get("reduced mobility")]
     assert len(rooms_with_slow) > 1
 
@@ -249,8 +249,8 @@ def test_profile_mix_is_spread_across_rooms_not_clustered():
 def test_occupants_are_never_sent_to_a_discounted_exit():
     """The regression that matters most: nearest_exit is computed against the base-case graph, so a
     scenario that closes that exit would otherwise march everyone into a locked door."""
-    obj = _obj()
-    scn = _scenario(obj, "SCN-NIGHT")            # discounts E2
+    obj = sample_object()
+    scn = scenario_by_id(obj, "SCN-NIGHT")            # discounts E2
     block = occupancy_block(obj, scn)
 
     assert block["by_room"]                       # the scenario does place people
@@ -261,8 +261,8 @@ def test_occupants_are_never_sent_to_a_discounted_exit():
 
 
 def test_a_room_aiming_at_a_closed_exit_falls_back_to_the_generic_goal():
-    obj = _obj()
-    scn = _scenario(obj, "SCN-NIGHT")
+    obj = sample_object()
+    scn = scenario_by_id(obj, "SCN-NIGHT")
     scn["simulation"]["occupancy_multipliers"] = []   # keep the shop open so it must reroute off E2
 
     block = occupancy_block(obj, scn)
@@ -274,8 +274,8 @@ def test_a_room_aiming_at_a_closed_exit_falls_back_to_the_generic_goal():
 
 
 def test_the_block_reports_the_unplaced_room_and_says_why():
-    obj = _obj()
-    block = occupancy_block(obj, _scenario(obj, "SCN-BASE"))
+    obj = sample_object()
+    block = occupancy_block(obj, scenario_by_id(obj, "SCN-BASE"))
 
     assert (block["placed_total"] + block["unplaced_total"] + block["unallocated_total"]
             == block["occupants_total"])
@@ -287,15 +287,15 @@ def test_the_block_reports_the_unplaced_room_and_says_why():
 
 
 def test_a_room_emptied_by_a_multiplier_is_not_reported_as_unreachable():
-    obj = _obj()
-    block = occupancy_block(obj, _scenario(obj, "SCN-NIGHT"))
+    obj = sample_object()
+    block = occupancy_block(obj, scenario_by_id(obj, "SCN-NIGHT"))
     # SHOP is zeroed by the commercial multiplier, so it never reaches unplaced_rooms at all
     assert "SHOP" not in {u["guid"] for u in block["unplaced_rooms"]}
     assert "SHOP" not in {r["guid"] for r in block["by_room"]}
 
 
 def test_attach_occupancy_reaches_every_scenario():
-    obj = attach_occupancy(_obj())
+    obj = attach_occupancy(sample_object())
     for scn in obj["scenarios"]:
         block = scn["occupancy"]
         assert (block["placed_total"] + block["unplaced_total"] + block["unallocated_total"]

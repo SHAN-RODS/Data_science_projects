@@ -33,7 +33,7 @@ for key in ("gate_result", "gate_context", "ifc_path", "scenario_object"):
     st.session_state.setdefault(key, None)
 
 try:
-    _, model_label = select_llm()
+    llm, model_label = select_llm()
 except Exception:
     model_label = "no LLM configured"
 

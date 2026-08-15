@@ -14,7 +14,7 @@ from shapely.geometry import box
 from core_backend.travel_distance import compute_travel_distances
 
 
-def _summary():
+def sample_summary():
     return {
         "spaces": [
             {"id": "A", "name": "A", "long_name": "Living", "area": 12.0,
@@ -35,7 +35,7 @@ def _summary():
 
 
 def test_geodesic_most_remote_point_along_corridor():
-    summary = _summary()
+    summary = sample_summary()
     classified = [{"guid": "A", "use_type": "living"}, {"guid": "B", "use_type": "circulation"}]
     final_exits = {"E": {"id": "E", "name": "Exit", "width_m": 1.0, "position": (14.0, 1.5, 0.0)}}
 
@@ -59,7 +59,7 @@ def test_a_door_placed_off_the_wall_centreline_still_bridges():
     been inset by the body clearance. Without a connector A becomes its own island and reports no
     egress path at all, which is exactly the failure this guards.
     """
-    summary = _summary()
+    summary = sample_summary()
     summary["doors"][0]["position"] = (4.45, 1.5, 0.0)
     classified = [{"guid": "A", "use_type": "living"}, {"guid": "B", "use_type": "circulation"}]
     final_exits = {"E": {"id": "E", "name": "Exit", "width_m": 1.0, "position": (14.0, 1.5, 0.0)}}
@@ -76,7 +76,7 @@ def test_a_door_the_hosting_wall_over_linked_does_not_bridge():
     Room C is listed against D1 but sits well beyond the tolerance, so no connector is run to it and
     it stays off the network -- a bridge that long would invent a doorway that does not exist.
     """
-    summary = _summary()
+    summary = sample_summary()
     summary["spaces"].append(
         {"id": "C", "name": "C", "long_name": "Store", "area": 6.0,
          "centroid": (2.0, 8.0, 0.0), "footprint": box(0.0, 6.0, 4.0, 9.0),
@@ -97,7 +97,7 @@ def test_a_door_the_hosting_wall_over_linked_does_not_bridge():
 
 
 def test_an_unreachable_room_says_why():
-    summary = _summary()
+    summary = sample_summary()
     summary["door_space_links"] = {"E": ["B"]}          # room A is walled off
     classified = [{"guid": "A", "use_type": "living"}, {"guid": "B", "use_type": "circulation"}]
     final_exits = {"E": {"id": "E", "name": "Exit", "width_m": 1.0, "position": (14.0, 1.5, 0.0)}}
