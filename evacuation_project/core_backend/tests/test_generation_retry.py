@@ -18,20 +18,29 @@ from core_backend.scenario_generation_llm_1 import BuildingAnalysis, invoke_stru
 
 def _scenario(multiplier):
     return {
-        "id": "S1", "type": "base_case", "title": "Base",
+        "id": "S1", "type": "base_case", "title": "Base", "purpose": "p",
         "conditions": {"exits_available": ["E"], "exits_discounted": [],
                        "occupants_total": 10, "occupancy_state": "day"},
-        "assumptions": [], "occupant_distribution": [], "routes": [], "bottlenecks": [], "risks": [],
+        "assumptions": [], "occupant_distribution": [], "routes": [], "restricted_areas": [],
+        "bottlenecks": [], "risks": [],
         "narrative": "n",
         "simulation": {
-            "movement_model": "steering", "end_time_s": 600.0,
-            "pre_movement": {"distribution": "normal", "mean_s": 60.0, "sd_s": 10.0, "basis": "b"},
+            "movement_model": "steering",
+            "simulation_settings": {"start_conditions": "s",
+                                    "duration": {"seconds": 600.0, "basis": "b"}},
+            "pre_movement": {"detection": "d", "alarm": "a", "recognition": "r",
+                             "response_delay": {"distribution": "normal", "mean_s": 60.0,
+                                                "sd_s": 10.0, "basis": "b"}},
             "profiles": [{"name": "adult", "fraction": 1.0, "speed_distribution": "normal",
                           "speed_ms_mean": 1.2, "speed_ms_sd": 0.0, "shoulder_width_m": 0.45,
                           "basis": "b"}],
             "occupancy_multipliers": [{"use_type": "dwelling", "multiplier": multiplier,
                                        "reason": "r"}],
+            "evacuation_time": {"estimated_total_s": 300.0, "basis": "b"},
         },
+        "fire_conditions": {"fire_origin": "not fire-specific", "fire_origin_storey": "",
+                            "affected_exits": [], "affected_routes": [],
+                            "detection_and_alarm": "d", "smoke_conditions": "s", "basis": "b"},
         "regulatory_justification": "j", "ai_explanation": "e",
     }
 
@@ -39,7 +48,7 @@ def _scenario(multiplier):
 class _FakeLLM:
     """Returns the multiplier at each position of ``sequence``, sticking on the last one."""
 
-    def _init_(self, sequence):
+    def __init__(self, sequence):
         self.sequence = sequence
         self.prompts = []
 

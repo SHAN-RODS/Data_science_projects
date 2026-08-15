@@ -31,7 +31,7 @@ def scenario_weights(obj, scenario):
     return weights
 
 def scenario_occupancy(obj, scenario):
-    target = (scenario.get("conditions") or {}).get("occupants_total") or 0
+    target = (scenario.get("occupancy") or {}).get("occupants_total") or 0
     space_by_guid = {s["guid"]: s for s in obj.get("spaces", [])}
 
     weights = scenario_weights(obj, scenario)
@@ -110,7 +110,8 @@ def why_unplaced(space, multipliers):
 def occupancy_block(obj, scenario):
     allocation, unplaced_counts, unallocated = scenario_occupancy(obj, scenario)
     space_by_guid = {s["guid"]: s for s in obj.get("spaces", [])}
-    conditions = scenario.get("conditions") or {}
+    # the scenario's own total and state — stated here and nowhere else in the scenario
+    seeded = scenario.get("occupancy") or {}
     sim = scenario.get("simulation") or {}
     discounted = set(discounted_exit_ids(scenario))
     names = exit_names(obj.get("exits", []))
@@ -155,13 +156,13 @@ def occupancy_block(obj, scenario):
     } for guid, n in sorted(unplaced_counts.items())]
 
     return {
-        "occupants_total": conditions.get("occupants_total"),
-        "occupancy_state": conditions.get("occupancy_state"),
+        "occupants_total": seeded.get("occupants_total"),
+        "occupancy_state": seeded.get("occupancy_state"),
         "placed_total": sum(allocation.values()),
         "unplaced_total": sum(unplaced_counts.values()),
         "unallocated_total": unallocated,
         "unallocated_why": (
-            f"this scenario asks for {conditions.get('occupants_total')} occupants, but its own "
+            f"this scenario asks for {seeded.get('occupants_total')} occupants, but its own "
             f"occupancy multipliers leave rooms holding only {capacity}. The shortfall is reported "
             f"rather than scaled into rooms that cannot hold it — review occupants_total against the "
             f"multipliers before running the study." if unallocated else None),

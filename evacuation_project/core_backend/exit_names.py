@@ -54,20 +54,27 @@ def name_exit_ids(value, names):
     return value
 
 
-def conditions_ids(scenario, field):
-    conditions = scenario.get("conditions") or {}
-    ids = conditions.get(f"{field}_ifc_ids")
+def scenario_conditions(scenario):
+    return (scenario.get("scenario_objective") or {}).get("conditions") or {}
+
+
+def evacuation_routes(scenario):
+    return scenario.get("evacuation_routes") or {}
+
+
+def block_ids(block, field):
+    ids = block.get(f"{field}_ifc_ids")
     if ids is not None:
         return list(ids)
-    return list(conditions.get(field) or [])
+    return list(block.get(field) or [])
 
 
 def discounted_exit_ids(scenario):
-    return conditions_ids(scenario, "exits_discounted")
+    return block_ids(scenario_conditions(scenario), "exits_discounted")
 
 
 def available_exit_ids(scenario):
-    return conditions_ids(scenario, "exits_available")
+    return block_ids(evacuation_routes(scenario), "exits_available")
 
 
 def unknown_exit_references(obj):
@@ -75,10 +82,9 @@ def unknown_exit_references(obj):
     known = set(names) | set(names.values())
     unknown = []
     for scn in obj.get("scenarios", []):
-        conditions = scn.get("conditions") or {}
         fire = scn.get("fire_conditions") or {}
-        referenced = list(conditions.get("exits_available") or []) + \
-                     list(conditions.get("exits_discounted") or []) + \
+        referenced = list(evacuation_routes(scn).get("exits_available") or []) + \
+                     list(scenario_conditions(scn).get("exits_discounted") or []) + \
                      list(fire.get("affected_exits") or [])
         missing = sorted({t for t in referenced if isinstance(t, str) and t not in known})
         if missing:

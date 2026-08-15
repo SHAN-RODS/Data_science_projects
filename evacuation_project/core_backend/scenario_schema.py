@@ -149,28 +149,51 @@ scenario_schema = {
             "minItems": 2,
             "items": {
                 "type": "object",
-                "required": ["id", "type", "conditions", "narrative"],
+                "required": ["id", "type", "scenario_objective", "evacuation_routes", "narrative"],
                 "properties": {
                     "id": {"type": "string"},
                     "type": {"type": "string"},
                     "title": {"type": "string"},
-                    "conditions": {
+                    "scenario_objective": {
                         "type": "object",
-                        "required": ["exits_available", "exits_discounted", "occupants_total"],
+                        "required": ["conditions"],
+                        "properties": {
+                            "purpose": {"type": "string"},
+                            "conditions": {
+                                "type": "object",
+                                "required": ["exits_discounted"],
+                                "properties": {
+                                    "exits_discounted": {"type": "array",
+                                                         "items": {"type": "string"}},
+                                    "exits_discounted_ifc_ids": {"type": "array",
+                                                                 "items": {"type": "string"}},
+                                },
+                            },
+                        },
+                    },
+                    "evacuation_routes": {
+                        "type": "object",
+                        "required": ["exits_available", "routes"],
                         "properties": {
                             "exits_available": {"type": "array", "items": {"type": "string"}},
-                            "exits_discounted": {"type": "array", "items": {"type": "string"}},
                             "exits_available_ifc_ids": {"type": "array",
                                                         "items": {"type": "string"}},
-                            "exits_discounted_ifc_ids": {"type": "array",
-                                                         "items": {"type": "string"}},
-                            "occupancy_state": {"type": "string"},
-                            "occupants_total": {"type": "integer", "minimum": 0},
+                            "routes": {"type": "array"},
+                            "restricted_areas": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["area", "reason"],
+                                    "properties": {
+                                        "area": {"type": "string"},
+                                        "reason": {"type": "string"},
+                                    },
+                                },
+                            },
                         },
                     },
                     "assumptions": {"type": "array"},
                     "occupant_distribution": {"type": "array"},
-                    "routes": {"type": "array"},
                     "bottlenecks": {"type": "array"},
                     "risks": {"type": "array"},
                     "narrative": {"type": "string"},
@@ -189,18 +212,50 @@ scenario_schema = {
                     },
                     "simulation": {
                         "type": "object",
-                        "required": ["movement_model", "pre_movement", "profiles"],
+                        "required": ["movement_model", "simulation_settings", "pre_movement",
+                                     "profiles", "evacuation_time"],
                         "properties": {
                             "movement_model": {"type": "string"},
-                            "end_time_s": {"type": "number", "minimum": 0},
+                            "simulation_settings": {
+                                "type": "object",
+                                "required": ["start_conditions", "duration"],
+                                "properties": {
+                                    "start_conditions": {"type": "string"},
+                                    "duration": {
+                                        "type": "object",
+                                        "required": ["seconds"],
+                                        "properties": {
+                                            "seconds": {"type": "number", "minimum": 0},
+                                            "basis": {"type": "string"},
+                                        },
+                                    },
+                                },
+                            },
+                            "evacuation_time": {
+                                "type": "object",
+                                "required": ["estimated_total_s"],
+                                "properties": {
+                                    "estimated_total_s": {"type": "number", "minimum": 0},
+                                    "basis": {"type": "string"},
+                                },
+                            },
                             "pre_movement": {
                                 "type": "object",
-                                "required": ["distribution", "mean_s", "basis"],
+                                "required": ["response_delay"],
                                 "properties": {
-                                    "distribution": {"type": "string"},
-                                    "mean_s": {"type": "number", "minimum": 0},
-                                    "sd_s": {"type": "number", "minimum": 0},
-                                    "basis": {"type": "string"},
+                                    "detection": {"type": "string"},
+                                    "alarm": {"type": "string"},
+                                    "recognition": {"type": "string"},
+                                    "response_delay": {
+                                        "type": "object",
+                                        "required": ["distribution", "mean_s", "basis"],
+                                        "properties": {
+                                            "distribution": {"type": "string"},
+                                            "mean_s": {"type": "number", "minimum": 0},
+                                            "sd_s": {"type": "number", "minimum": 0},
+                                            "basis": {"type": "string"},
+                                        },
+                                    },
                                 },
                             },
                             "profiles": {

@@ -4,7 +4,8 @@ from collections import defaultdict
 
 from jsonschema import Draft202012Validator
 
-from core_backend.exit_names import exit_names, unknown_exit_references
+from core_backend.exit_names import (evacuation_routes, exit_names, scenario_conditions,
+                                     unknown_exit_references)
 from core_backend.scenario_schema import scenario_schema
 import sys
 import json
@@ -34,6 +35,23 @@ NIGHT_WORDS = ("night", "asleep", "sleeping", "overnight", "night-time", "nightt
 DAY_WORDS = ("day", "daytime", "day-time", "working hours", "office hours", "waking")
 
 
+def scenario_total(scenario):
+    """The scenario's occupant total. It is stated once, in the occupancy block."""
+    return (scenario.get("occupancy") or {}).get("occupants_total")
+
+
+def response_delay(scenario):
+    """The pre-travel activity distribution, one of pre_movement's four parts."""
+    pre = (scenario.get("simulation") or {}).get("pre_movement") or {}
+    return pre.get("response_delay") or {}
+
+
+def run_duration(scenario):
+    """How long the run is allowed to go for, in seconds."""
+    settings = (scenario.get("simulation") or {}).get("simulation_settings") or {}
+    return (settings.get("duration") or {}).get("seconds")
+
+
 def allowed_floats(obj):
     allowed = set()
 
@@ -52,16 +70,16 @@ def allowed_floats(obj):
         add(s.get("occupant_load"))
         add(s.get("travel_distance_m"))
     for scn in obj["scenarios"]:
-        c = scn.get("conditions", {})
-        add(c.get("occupants_total"))
-        add(len(c.get("exits_available", [])))
-        add(len(c.get("exits_discounted", [])))
+        add(scenario_total(scn))
+        add(len(evacuation_routes(scn).get("exits_available", [])))
+        add(len(scenario_conditions(scn).get("exits_discounted", [])))
 
         sim = scn.get("simulation") or {}
-        add(sim.get("end_time_s"))
-        pre = sim.get("pre_movement") or {}
-        add(pre.get("mean_s"))
-        add(pre.get("sd_s"))
+        add(run_duration(scn))
+        add((sim.get("evacuation_time") or {}).get("estimated_total_s"))
+        delay = response_delay(scn)
+        add(delay.get("mean_s"))
+        add(delay.get("sd_s"))
         for profile in sim.get("profiles") or []:
             add(profile.get("speed_ms_mean"))
             add(profile.get("speed_ms_sd"))
@@ -101,13 +119,17 @@ def is_grounded(value, allowed):
 
 
 def scenario_text(scn, id_tokens):
-    parts = [scn.get("narrative", ""), scn.get("title", "")]
+    routes = evacuation_routes(scn)
+    parts = [scn.get("narrative", ""), scn.get("title", ""),
+             (scn.get("scenario_objective") or {}).get("purpose", "")]
     parts += scn.get("occupant_distribution", []) or []
     parts += scn.get("assumptions", []) or []
     parts += scn.get("bottlenecks", []) or []
     parts += scn.get("risks", []) or []
-    for r in scn.get("routes", []) or []:
+    for r in routes.get("routes") or []:
         parts += [r.get("from_area", ""), r.get("via", ""), r.get("to_exit", ""), r.get("note", "")]
+    for a in routes.get("restricted_areas") or []:
+        parts += [a.get("area", ""), a.get("reason", "")]
     text = " ".join(str(p) for p in parts)
     for token in sorted((t for t in id_tokens if t), key=len, reverse=True):
         text = text.replace(token, " ")
@@ -134,6 +156,41 @@ def in_range(value, bounds):
     return isinstance(value, (int, float)) and lo <= value <= hi
 
 
+def evacuation_time_issues(sid, evacuation_time, duration, pre_movement_mean_s):
+    """evacuation_time is the AI's own estimate, not a simulation result, so nothing downstream
+    grounds it. These are the contradictions that make an estimate unusable on its face: a run that
+    ends before the building is clear, and a clearance that beats its own pre-movement time."""
+    issues = []
+    estimate = evacuation_time.get("estimated_total_s")
+
+    if not isinstance(estimate, (int, float)):
+        issues.append({"scenario": sid, "field": "evacuation_time.estimated_total_s",
+                       "issue": f"{estimate!r} is not a number of seconds"})
+        return issues
+
+    if not in_range(estimate, END_TIME_RANGE_S):
+        issues.append({"scenario": sid, "field": "evacuation_time.estimated_total_s",
+                       "issue": f"{estimate} s outside {END_TIME_RANGE_S}"})
+
+    if isinstance(duration, (int, float)) and estimate > duration:
+        issues.append({"scenario": sid, "field": "evacuation_time.estimated_total_s",
+                       "issue": f"the estimate is {estimate} s but the run is only {duration} s "
+                                f"long — the simulation would stop before the building is clear, so "
+                                f"the run cannot test the estimate"})
+
+    if isinstance(pre_movement_mean_s, (int, float)) and estimate < pre_movement_mean_s:
+        issues.append({"scenario": sid, "field": "evacuation_time.estimated_total_s",
+                       "issue": f"the estimate is {estimate} s but occupants take a mean "
+                                f"{pre_movement_mean_s} s just to start moving — the building "
+                                f"cannot clear before its own pre-movement time"})
+
+    if not str(evacuation_time.get("basis") or "").strip():
+        issues.append({"scenario": sid, "field": "evacuation_time.basis",
+                       "issue": "no arithmetic given — an estimate with no working behind it cannot "
+                                "be checked against the run that replaces it"})
+    return issues
+
+
 def simulation_parameter_issues(obj):
     issues = []
     for scn in obj.get("scenarios", []):
@@ -148,19 +205,36 @@ def simulation_parameter_issues(obj):
             issues.append({"scenario": sid, "field": "movement_model",
                            "issue": f"{sim.get('movement_model')!r} is not one of "
                                     f"{sorted(ALLOWED_MOVEMENT_MODELS)}"})
-        if sim.get("end_time_s") is not None and not in_range(sim["end_time_s"], END_TIME_RANGE_S):
-            issues.append({"scenario": sid, "field": "end_time_s",
-                           "issue": f"{sim['end_time_s']} s outside {END_TIME_RANGE_S}"})
+        settings = sim.get("simulation_settings") or {}
+        if not str(settings.get("start_conditions") or "").strip():
+            issues.append({"scenario": sid, "field": "simulation_settings.start_conditions",
+                           "issue": "no starting state given — the run has no t=0 to begin from"})
+
+        duration = run_duration(scn)
+        if duration is not None and not in_range(duration, END_TIME_RANGE_S):
+            issues.append({"scenario": sid, "field": "simulation_settings.duration.seconds",
+                           "issue": f"{duration} s outside {END_TIME_RANGE_S}"})
+
+        issues += evacuation_time_issues(sid, sim.get("evacuation_time") or {}, duration,
+                                         response_delay(scn).get("mean_s"))
+
+        delay = response_delay(scn)
+        if not in_range(delay.get("mean_s"), PRE_MOVEMENT_RANGE_S):
+            issues.append({"scenario": sid, "field": "pre_movement.response_delay.mean_s",
+                           "issue": f"{delay.get('mean_s')} s outside {PRE_MOVEMENT_RANGE_S}"})
+        if str(delay.get("distribution", "")).strip().lower() not in ALLOWED_DISTRIBUTIONS:
+            issues.append({"scenario": sid, "field": "pre_movement.response_delay.distribution",
+                           "issue": f"{delay.get('distribution')!r} is not a recognised distribution"})
+        if not str(delay.get("basis") or "").strip():
+            issues.append({"scenario": sid, "field": "pre_movement.response_delay.basis",
+                           "issue": "no basis given"})
 
         pre = sim.get("pre_movement") or {}
-        if not in_range(pre.get("mean_s"), PRE_MOVEMENT_RANGE_S):
-            issues.append({"scenario": sid, "field": "pre_movement.mean_s",
-                           "issue": f"{pre.get('mean_s')} s outside {PRE_MOVEMENT_RANGE_S}"})
-        if str(pre.get("distribution", "")).strip().lower() not in ALLOWED_DISTRIBUTIONS:
-            issues.append({"scenario": sid, "field": "pre_movement.distribution",
-                           "issue": f"{pre.get('distribution')!r} is not a recognised distribution"})
-        if not str(pre.get("basis") or "").strip():
-            issues.append({"scenario": sid, "field": "pre_movement.basis", "issue": "no basis given"})
+        for part in ("detection", "alarm", "recognition"):
+            if not str(pre.get(part) or "").strip():
+                issues.append({"scenario": sid, "field": f"pre_movement.{part}",
+                               "issue": "no assumption stated — pre-movement time is measured from "
+                                        "detection, so the study cannot say what its clock starts at"})
 
         profiles = sim.get("profiles") or []
         if not profiles:
@@ -199,7 +273,7 @@ def sleeping_share(obj):
 
 
 def state_of(scenario):
-    state = str((scenario.get("conditions") or {}).get("occupancy_state") or "").lower()
+    state = str((scenario.get("occupancy") or {}).get("occupancy_state") or "").lower()
     if any(w in state for w in NIGHT_WORDS):
         return "night"
     if any(w in state for w in DAY_WORDS):
@@ -217,7 +291,7 @@ def occupancy_state_issues(obj):
     for scn in obj.get("scenarios", []):
         state = state_of(scn)
         if state:
-            total = (scn.get("conditions") or {}).get("occupants_total")
+            total = scenario_total(scn)
             if isinstance(total, int):
                 by_state[state].append((scn.get("id"), total))
     if not by_state["night"] or not by_state["day"]:
@@ -257,7 +331,7 @@ def occupancy_variance_issues(obj):
     by_total, by_signature = defaultdict(list), defaultdict(list)
     for scn in scenarios:
         sid = scn.get("id")
-        total = (scn.get("conditions") or {}).get("occupants_total")
+        total = scenario_total(scn)
         if isinstance(total, int):
             by_total[total].append(sid)
             if ceiling and total >= ceiling:
@@ -300,7 +374,7 @@ def fire_condition_issues(obj):
                                     "detection assumption or smoke condition to run against"})
             continue
 
-        discounted = set((scn.get("conditions") or {}).get("exits_discounted") or [])
+        discounted = set(scenario_conditions(scn).get("exits_discounted") or [])
         affected = set(fire.get("affected_exits") or [])
         if discounted != affected:
             unexplained = sorted(discounted - affected)
@@ -323,12 +397,14 @@ def placement_issues(obj):
     issues = []
     for scn in obj.get("scenarios", []):
         sid = scn.get("id")
-        target = (scn.get("conditions") or {}).get("occupants_total") or 0
+        target = scenario_total(scn) or 0
         allocation, unplaced, unallocated = scenario_occupancy(obj, scn)
         placed, missing = sum(allocation.values()), sum(unplaced.values())
 
-        stored = scn.get("occupancy")
-        if stored and stored.get("placed_total") != placed:
+        # the seed block carries only the total and the state; placed_total appears once the full
+        # block has been attached, and only then is there anything to compare against.
+        stored = scn.get("occupancy") or {}
+        if "placed_total" in stored and stored.get("placed_total") != placed:
             issues.append({"scenario": sid, "field": "occupancy.placed_total",
                            "issue": f"the stored occupancy block places {stored.get('placed_total')} "
                                     f"occupant(s) but the allocation recomputes to {placed} — the "

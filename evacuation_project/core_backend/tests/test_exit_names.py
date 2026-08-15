@@ -112,10 +112,10 @@ def test_the_model_is_never_shown_an_exit_globalid():
 
 def test_the_object_carries_both_the_name_and_the_id():
     names = exit_names(_exits())
-    exits_block = exits_block(_exits(), names)
-    assert [e["exit_name"] for e in exits_block] == ["Exit 1", "Exit 2", "Exit 3"]
+    block = exits_block(_exits(), names)
+    assert [e["exit_name"] for e in block] == ["Exit 1", "Exit 2", "Exit 3"]
     # the IFC's own label is kept so the door is still findable in the model
-    assert exits_block[0]["name"] == "O-1:O-1.10x21:1429543"
+    assert block[0]["name"] == "O-1:O-1.10x21:1429543"
 
     space = spaces_block(_grounded(), [], names)[0]
     assert space["nearest_exit_name"] == "Exit 1"
@@ -127,19 +127,29 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
     names = exit_names(_exits())
     content = ScenarioContent(
         type="one_exit_discounted", title="Exit 3 unavailable",
+        purpose="shows what the loss of Exit 3 costs the Ground storey",
         conditions={"exits_available": ["Exit 1", "Exit 2"], "exits_discounted": ["Exit 3"],
                     "occupancy_state": "night", "occupants_total": 4},
         assumptions=["Exit 3 is assumed blocked"], occupant_distribution=["Ground: 4"],
         routes=[{"from_area": "Ground", "via": "corridor", "to_exit": "Exit 1", "note": "12.0 m"}],
+        restricted_areas=[{"area": "Exit 3 lobby", "reason": "smoke-logged"}],
         bottlenecks=["Exit 1 is the narrowest at 1.02 m"], risks=["longer travel"],
         narrative="With Exit 3 shut, everyone leaves by Exit 1.",
-        simulation={"movement_model": "steering", "end_time_s": 600.0,
-                    "pre_movement": {"distribution": "normal", "mean_s": 60.0, "sd_s": 10.0,
-                                     "basis": "alert occupants"},
+        simulation={"movement_model": "steering",
+                    "simulation_settings": {
+                        "start_conditions": "occupants at rest, Exit 1 open",
+                        "duration": {"seconds": 600.0, "basis": "long enough to clear"}},
+                    "pre_movement": {"detection": "smoke alarms in the dwelling",
+                                     "alarm": "alarm sounds on detection",
+                                     "recognition": "alert occupants react at once",
+                                     "response_delay": {"distribution": "normal", "mean_s": 60.0,
+                                                        "sd_s": 10.0, "basis": "alert occupants"}},
                     "profiles": [{"name": "adult", "fraction": 1.0, "speed_distribution": "normal",
                                   "speed_ms_mean": 1.2, "speed_ms_sd": 0.0,
                                   "shoulder_width_m": 0.45, "basis": "able adults"}],
-                    "occupancy_multipliers": []},
+                    "occupancy_multipliers": [],
+                    "evacuation_time": {"estimated_total_s": 300.0,
+                                        "basis": "60 s pre-movement plus 12.0 m of travel"}},
         fire_conditions={"fire_origin": "Living room", "fire_origin_storey": "Ground",
                          "affected_exits": ["Exit 3"], "affected_routes": [],
                          "detection_and_alarm": "smoke alarms in the dwelling",
@@ -149,13 +159,50 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
 
     scn = assemble_scenario(content, 1, names)
 
-    assert scn["conditions"]["exits_discounted"] == ["Exit 3"]
-    assert scn["conditions"]["exits_discounted_ifc_ids"] == ["3uMBEvBYD33AT9ygIhdZHw"]
-    assert scn["conditions"]["exits_available_ifc_ids"] == ["0vwVLBnBr9meBshDw$RHGp",
-                                                            "3T$cyq5XDFhgqPE_ZtOXlr"]
-    assert scn["routes"][0]["to_exit"] == "Exit 1"
+    conditions = scn["scenario_objective"]["conditions"]
+    assert conditions["exits_discounted"] == ["Exit 3"]
+    assert conditions["exits_discounted_ifc_ids"] == ["3uMBEvBYD33AT9ygIhdZHw"]
+    routes = scn["evacuation_routes"]
+    assert routes["exits_available_ifc_ids"] == ["0vwVLBnBr9meBshDw$RHGp",
+                                                 "3T$cyq5XDFhgqPE_ZtOXlr"]
+    assert routes["routes"][0]["to_exit"] == "Exit 1"
+    assert routes["restricted_areas"] == [{"area": "Exit 3 lobby", "reason": "smoke-logged"}]
     # the fire block goes through the same naming pass, so it can never carry a raw GlobalId
     assert scn["fire_conditions"]["affected_exits"] == ["Exit 3"]
+
+
+def test_the_population_is_seeded_into_the_occupancy_block_not_the_conditions():
+    """occupants_total and occupancy_state are stated once. attach_occupancy() picks them up from
+    there, so the conditions never carry a second copy to drift from."""
+    names = exit_names(_exits())
+    content = ScenarioContent(
+        type="night", title="Night", purpose="p",
+        conditions={"exits_available": ["Exit 1"], "exits_discounted": [],
+                    "occupancy_state": "night", "occupants_total": 4},
+        assumptions=[], occupant_distribution=[], routes=[], restricted_areas=[],
+        bottlenecks=[], risks=[], narrative="n",
+        simulation={"movement_model": "steering",
+                    "simulation_settings": {
+                        "start_conditions": "occupants at rest, Exit 1 open",
+                        "duration": {"seconds": 600.0, "basis": "long enough to clear"}},
+                    "pre_movement": {"detection": "d", "alarm": "a", "recognition": "r",
+                                     "response_delay": {"distribution": "normal", "mean_s": 60.0,
+                                                        "sd_s": 10.0, "basis": "b"}},
+                    "profiles": [{"name": "adult", "fraction": 1.0, "speed_distribution": "normal",
+                                  "speed_ms_mean": 1.2, "speed_ms_sd": 0.0,
+                                  "shoulder_width_m": 0.45, "basis": "able adults"}],
+                    "occupancy_multipliers": [],
+                    "evacuation_time": {"estimated_total_s": 300.0,
+                                        "basis": "60 s pre-movement plus 12.0 m of travel"}},
+        fire_conditions={"fire_origin": "not fire-specific", "detection_and_alarm": "d",
+                         "smoke_conditions": "s", "basis": "b"},
+        regulatory_justification="ENG-R11", ai_explanation="x")
+
+    scn = assemble_scenario(content, 1, names)
+
+    assert scn["occupancy"] == {"occupants_total": 4, "occupancy_state": "night"}
+    assert set(scn["scenario_objective"]["conditions"]) == {"exits_discounted",
+                                                            "exits_discounted_ifc_ids"}
 
 
 # ---- the record still closes the right door ---------------------------------------------------------
@@ -172,12 +219,17 @@ def _obj_named():
         "not_assessed": [],
         "scenarios": [
             {"id": "SCN-001", "type": "one_exit_discounted", "title": "Exit 3 unavailable",
-             "conditions": {"exits_available": ["Exit 1", "Exit 2"],
-                            "exits_discounted": ["Exit 3"],
-                            "exits_available_ifc_ids": resolve_exit_ids(["Exit 1", "Exit 2"], names),
-                            "exits_discounted_ifc_ids": resolve_exit_ids(["Exit 3"], names),
-                            "occupancy_state": "day", "occupants_total": 4},
-             "assumptions": [], "occupant_distribution": [], "routes": [], "bottlenecks": [],
+             "scenario_objective": {
+                 "purpose": "tests the loss of Exit 3",
+                 "conditions": {
+                     "exits_discounted": ["Exit 3"],
+                     "exits_discounted_ifc_ids": resolve_exit_ids(["Exit 3"], names)}},
+             "evacuation_routes": {
+                 "exits_available": ["Exit 1", "Exit 2"],
+                 "exits_available_ifc_ids": resolve_exit_ids(["Exit 1", "Exit 2"], names),
+                 "routes": [], "restricted_areas": []},
+             "occupancy": {"occupants_total": 4, "occupancy_state": "day"},
+             "assumptions": [], "occupant_distribution": [], "bottlenecks": [],
              "risks": [], "narrative": "Everyone leaves by Exit 1."},
         ],
     }
@@ -195,14 +247,15 @@ def test_a_scenario_written_in_names_closes_the_right_globalid():
 
 def test_an_exit_name_the_model_invented_is_reported_not_ignored():
     obj = _obj_named()
-    obj["scenarios"][0]["conditions"]["exits_discounted"] = ["Exit 9"]
+    obj["scenarios"][0]["scenario_objective"]["conditions"]["exits_discounted"] = ["Exit 9"]
     assert unknown_exit_references(obj) == [{"scenario": "SCN-001", "unknown_exits": ["Exit 9"]}]
 
 
 def test_an_object_written_before_names_existed_reports_nothing_unknown():
     obj = _obj_named()
-    conditions = obj["scenarios"][0]["conditions"]
-    conditions["exits_available"] = conditions.pop("exits_available_ifc_ids")
+    scn = obj["scenarios"][0]
+    conditions, routes = scn["scenario_objective"]["conditions"], scn["evacuation_routes"]
+    routes["exits_available"] = routes.pop("exits_available_ifc_ids")
     conditions["exits_discounted"] = conditions.pop("exits_discounted_ifc_ids")
     assert unknown_exit_references(obj) == []
-    assert discounted_exit_ids(obj["scenarios"][0]) == ["3uMBEvBYD33AT9ygIhdZHw"]
+    assert discounted_exit_ids(scn) == ["3uMBEvBYD33AT9ygIhdZHw"]

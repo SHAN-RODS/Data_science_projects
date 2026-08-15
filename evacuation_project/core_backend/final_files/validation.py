@@ -29,9 +29,9 @@ def allowed_floats(obj):
         add(s.get("occupant_load"))
         add(s.get("travel_distance_m"))
     for scn in obj["scenarios"]:
-        c = scn.get("conditions", {})
-        add(c.get("occupants_total"))
-        add(len(c.get("exits_available", [])))
+        c = (scn.get("scenario_objective") or {}).get("conditions") or {}
+        add((scn.get("occupancy") or {}).get("occupants_total"))
+        add(len((scn.get("evacuation_routes") or {}).get("exits_available", [])))
         add(len(c.get("exits_discounted", [])))
 
     by_storey_occ = defaultdict(int)
@@ -59,13 +59,17 @@ def is_grounded(value, allowed):
 
 
 def scenario_text(scn, id_tokens):
-    parts = [scn.get("narrative", ""), scn.get("title", "")]
+    routes = scn.get("evacuation_routes") or {}
+    parts = [scn.get("narrative", ""), scn.get("title", ""),
+             (scn.get("scenario_objective") or {}).get("purpose", "")]
     parts += scn.get("occupant_distribution", []) or []
     parts += scn.get("assumptions", []) or []
     parts += scn.get("bottlenecks", []) or []
     parts += scn.get("risks", []) or []
-    for r in scn.get("routes", []) or []:
+    for r in routes.get("routes") or []:
         parts += [r.get("from_area", ""), r.get("via", ""), r.get("to_exit", ""), r.get("note", "")]
+    for a in routes.get("restricted_areas") or []:
+        parts += [a.get("area", ""), a.get("reason", "")]
     text = " ".join(str(p) for p in parts)
     for token in id_tokens:
         if token:

@@ -20,13 +20,17 @@ def _minimal_object(narrative):
                     "reachable": True}],
         "scenarios": [
             {"id": "SCN-BASE", "type": "base_case", "title": "t",
-             "conditions": {"exits_available": ["E1"], "exits_discounted": [],
-                            "occupancy_state": "night", "occupants_total": 10},
-             "narrative": narrative, "routes": []},
+             "scenario_objective": {"purpose": "p", "conditions": {"exits_discounted": []}},
+             "evacuation_routes": {"exits_available": ["E1"], "routes": [],
+                                   "restricted_areas": []},
+             "occupancy": {"occupants_total": 10, "occupancy_state": "night"},
+             "narrative": narrative},
             {"id": "SCN-EXIT-BLOCKED", "type": "one_exit_discounted", "title": "t",
-             "conditions": {"exits_available": [], "exits_discounted": ["E1"],
-                            "occupancy_state": "night", "occupants_total": 10},
-             "narrative": "Occupants re-route.", "routes": []},
+             "scenario_objective": {"purpose": "p", "conditions": {"exits_discounted": ["E1"]}},
+             "evacuation_routes": {"exits_available": [], "routes": [],
+                                   "restricted_areas": []},
+             "occupancy": {"occupants_total": 10, "occupancy_state": "night"},
+             "narrative": "Occupants re-route."},
         ],
         "regulation_check": {"jurisdiction": "england", "passed": True,
                              "violations": [], "manual_review": [], "basis": "test"},
@@ -64,13 +68,23 @@ def test_simulation_invariants_are_none_without_a_simulation_block():
 
 _GOOD_SIM = {
     "movement_model": "steering",
-    "end_time_s": 900.0,
-    "pre_movement": {"distribution": "lognormal", "mean_s": 120.0, "sd_s": 60.0,
-                     "basis": "sleeping residential occupancy"},
+    "simulation_settings": {
+        "start_conditions": "residents asleep in their flats, the single exit open",
+        "duration": {"seconds": 900.0, "basis": "long enough to clear the building"},
+    },
+    "pre_movement": {
+        "detection": "smoke detection in the common parts",
+        "alarm": "single-stage alarm, sounders throughout",
+        "recognition": "sleeping residents take longer to read the alarm as real",
+        "response_delay": {"distribution": "lognormal", "mean_s": 120.0, "sd_s": 60.0,
+                           "basis": "sleeping residential occupancy"},
+    },
     "profiles": [{"name": "adult", "fraction": 1.0, "speed_distribution": "normal",
                   "speed_ms_mean": 1.19, "speed_ms_sd": 0.24, "shoulder_width_m": 0.46,
                   "basis": "able adults on the level"}],
     "occupancy_multipliers": [],
+    "evacuation_time": {"estimated_total_s": 300.0,
+                        "basis": "120 s pre-movement plus travel over the 15.0 m route"},
 }
 
 
@@ -103,8 +117,16 @@ def test_out_of_range_walking_speed_is_flagged():
 
 
 def test_absurd_pre_movement_time_is_flagged():
-    assert "pre_movement.mean_s" in _fields(
-        _with_simulation(lambda sim: sim["pre_movement"].update(mean_s=7200.0)))
+    assert "pre_movement.response_delay.mean_s" in _fields(
+        _with_simulation(lambda sim: sim["pre_movement"]["response_delay"].update(mean_s=7200.0)))
+
+
+def test_a_pre_movement_clock_with_no_starting_point_is_flagged():
+    """Response delay runs from the moment occupants recognise the alarm. Drop detection, alarm or
+    recognition and the study cannot say when that moment is."""
+    for part in ("detection", "alarm", "recognition"):
+        assert f"pre_movement.{part}" in _fields(
+            _with_simulation(lambda sim, part=part: sim["pre_movement"].update({part: "  "})))
 
 
 def test_fractions_that_do_not_sum_to_one_are_flagged():
@@ -116,8 +138,46 @@ def test_fractions_that_do_not_sum_to_one_are_flagged():
 
 
 def testmissing_basis_is_flagged():
-    assert "pre_movement.basis" in _fields(
-        _with_simulation(lambda sim: sim["pre_movement"].update(basis="   ")))
+    assert "pre_movement.response_delay.basis" in _fields(
+        _with_simulation(lambda sim: sim["pre_movement"]["response_delay"].update(basis="   ")))
+
+
+def test_a_run_with_no_starting_state_is_flagged():
+    assert "simulation_settings.start_conditions" in _fields(
+        _with_simulation(lambda sim: sim["simulation_settings"].update(start_conditions=" ")))
+
+
+def test_an_absurd_run_duration_is_flagged():
+    assert "simulation_settings.duration.seconds" in _fields(
+        _with_simulation(lambda sim: sim["simulation_settings"]["duration"].update(seconds=5.0)))
+
+
+# ---- the one number nothing downstream grounds ------------------------------------------------------
+
+def test_an_estimate_the_run_would_never_reach_is_flagged():
+    """evacuation_time is the AI's own arithmetic, not a result. An estimate longer than the run is
+    self-defeating: the simulation stops before the building is clear."""
+    issues = simulation_parameter_issues(
+        _with_simulation(lambda sim: sim["evacuation_time"].update(estimated_total_s=1200.0)))
+    assert any("stop before the building is clear" in i["issue"] for i in issues)
+
+
+def test_an_estimate_faster_than_its_own_pre_movement_is_flagged():
+    """120 s mean response delay, so nobody is even moving before then — a 60 s clearance is not
+    arithmetic, it is a slip."""
+    issues = simulation_parameter_issues(
+        _with_simulation(lambda sim: sim["evacuation_time"].update(estimated_total_s=60.0)))
+    assert any("cannot clear before its own pre-movement time" in i["issue"] for i in issues)
+
+
+def test_an_estimate_with_no_working_behind_it_is_flagged():
+    assert "evacuation_time.basis" in _fields(
+        _with_simulation(lambda sim: sim["evacuation_time"].update(basis="  ")))
+
+
+def test_a_missing_estimate_is_flagged_rather_than_passed_over():
+    assert "evacuation_time.estimated_total_s" in _fields(
+        _with_simulation(lambda sim: sim.pop("evacuation_time")))
 
 
 def test_unknown_movement_model_is_flagged():

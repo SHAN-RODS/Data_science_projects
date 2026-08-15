@@ -16,9 +16,18 @@ from core_backend.occupant_placement import (allocate_occupants, attach_occupanc
 def _simulation(multipliers=None):
     return {
         "movement_model": "steering",
-        "end_time_s": 900.0,
-        "pre_movement": {"distribution": "lognormal", "mean_s": 120.0, "sd_s": 60.0,
-                         "basis": "sleeping residential occupancy, alarm assumed audible in flats"},
+        "simulation_settings": {
+            "start_conditions": "residents asleep in their flats, both exits open",
+            "duration": {"seconds": 900.0, "basis": "long enough to clear the building"},
+        },
+        "pre_movement": {
+            "detection": "smoke detection in the common parts",
+            "alarm": "single-stage alarm, sounders throughout",
+            "recognition": "sleeping residents take longer to read the alarm as real",
+            "response_delay": {
+                "distribution": "lognormal", "mean_s": 120.0, "sd_s": 60.0,
+                "basis": "sleeping residential occupancy, alarm assumed audible in flats"},
+        },
         "profiles": [
             {"name": "adult", "fraction": 0.8, "speed_distribution": "normal",
              "speed_ms_mean": 1.19, "speed_ms_sd": 0.24, "shoulder_width_m": 0.46,
@@ -28,6 +37,8 @@ def _simulation(multipliers=None):
              "basis": "assumed share of slower occupants in a residential block"},
         ],
         "occupancy_multipliers": multipliers or [],
+        "evacuation_time": {"estimated_total_s": 400.0,
+                            "basis": "120 s pre-movement plus travel over the 22.0 m route"},
     }
 
 
@@ -78,15 +89,21 @@ def _obj():
         ],
         "scenarios": [
             {"id": "SCN-BASE", "type": "base_case", "title": "Base case",
-             "conditions": {"exits_available": ["E1", "E2"], "exits_discounted": [],
-                            "occupancy_state": "peak occupancy", "occupants_total": 12},
-             "assumptions": [], "occupant_distribution": [], "routes": [], "bottlenecks": [],
+             "scenario_objective": {"purpose": "undegraded comparison",
+                                    "conditions": {"exits_discounted": []}},
+             "evacuation_routes": {"exits_available": ["E1", "E2"], "routes": [],
+                                   "restricted_areas": []},
+             "occupancy": {"occupants_total": 12, "occupancy_state": "peak occupancy"},
+             "assumptions": [], "occupant_distribution": [], "bottlenecks": [],
              "risks": [], "narrative": "All leave.", "simulation": _simulation(),
              "regulatory_justification": "ENG-R11", "ai_explanation": "baseline"},
             {"id": "SCN-NIGHT", "type": "night_one_exit_discounted", "title": "Night, rear exit lost",
-             "conditions": {"exits_available": ["E1"], "exits_discounted": ["E2"],
-                            "occupancy_state": "night", "occupants_total": 9},
-             "assumptions": [], "occupant_distribution": [], "routes": [], "bottlenecks": [],
+             "scenario_objective": {"purpose": "loss of the rear exit at night",
+                                    "conditions": {"exits_discounted": ["E2"]}},
+             "evacuation_routes": {"exits_available": ["E1"], "routes": [],
+                                   "restricted_areas": []},
+             "occupancy": {"occupants_total": 9, "occupancy_state": "night"},
+             "assumptions": [], "occupant_distribution": [], "bottlenecks": [],
              "risks": [], "narrative": "Shop is closed.",
              "simulation": _simulation([{"use_type": "commercial", "multiplier": 0.0,
                                          "reason": "shop shut at night"},
@@ -115,7 +132,7 @@ def test_allocation_conserves_the_scenario_total():
     for scn in obj["scenarios"]:
         placed, unplaced, unallocated = scenario_occupancy(obj, scn)
         assert (sum(placed.values()) + sum(unplaced.values()) + unallocated
-                == scn["conditions"]["occupants_total"])
+                == scn["occupancy"]["occupants_total"])
 
 
 def test_unreachable_room_is_never_seeded():
@@ -160,7 +177,7 @@ def test_no_room_is_ever_given_more_people_than_it_can_hold():
     obj = _obj()
     scn = _scenario(obj, "SCN-NIGHT")
     # at night the dwellings (4 + 5) and the sealed store (2) are all that stay occupied: capacity 11
-    scn["conditions"]["occupants_total"] = 20
+    scn["occupancy"]["occupants_total"] = 20
 
     placed, unplaced, unallocated = scenario_occupancy(obj, scn)
     loads = {s["guid"]: s["occupant_load"] for s in obj["spaces"]}
@@ -282,5 +299,5 @@ def test_attach_occupancy_reaches_every_scenario():
     for scn in obj["scenarios"]:
         block = scn["occupancy"]
         assert (block["placed_total"] + block["unplaced_total"] + block["unallocated_total"]
-                == scn["conditions"]["occupants_total"])
+                == scn["occupancy"]["occupants_total"])
         assert block["allocation_method"] and block["position_note"]

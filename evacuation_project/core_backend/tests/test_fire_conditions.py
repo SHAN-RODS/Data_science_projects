@@ -22,8 +22,9 @@ def _obj(discounted=(), affected=(), with_fire=True):
                      {"id": "E2", "name": "Rear", "position": [20.0, 0.0, 0.0]}],
            "spaces": [],
            "scenarios": [{"id": "SCN-001",
-                          "conditions": {"exits_available": ["Exit 2"],
-                                         "exits_discounted": list(discounted)}}]}
+                          "scenario_objective": {
+                              "conditions": {"exits_discounted": list(discounted)}},
+                          "evacuation_routes": {"exits_available": ["Exit 2"]}}]}
     if with_fire:
         obj["scenarios"][0]["fire_conditions"] = _fire(affected)
     return obj

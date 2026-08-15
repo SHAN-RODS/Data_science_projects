@@ -41,21 +41,49 @@ def ifc_elements(obj, scn):
 
 def _occupancy(scn):
     occ = scn.get("occupancy") or {}
-    conditions = scn.get("conditions") or {}
     return {
-        "occupants_total": occ.get("occupants_total", conditions.get("occupants_total")),
-        "occupancy_state": occ.get("occupancy_state", conditions.get("occupancy_state")),
+        "occupants_total": occ.get("occupants_total"),
+        "occupancy_state": occ.get("occupancy_state"),
     }
 
 
 def pre_movement_time(scn):
-    """How long occupants take to react before they move — a distribution, not a single number."""
+    """The time from ignition to occupants moving, in its four parts: how the fire is detected, how
+    the alarm is raised, how long occupants take to recognise it, and the response delay that
+    follows — the last as a distribution, not a single number."""
     pre = (scn.get("simulation") or {}).get("pre_movement") or {}
+    delay = pre.get("response_delay") or {}
     return {
-        "distribution": pre.get("distribution"),
-        "mean_s": pre.get("mean_s"),
-        "sd_s": pre.get("sd_s"),
-        "basis": pre.get("basis"),
+        "detection": pre.get("detection"),
+        "alarm": pre.get("alarm"),
+        "recognition": pre.get("recognition"),
+        "response_delay": {
+            "distribution": delay.get("distribution"),
+            "mean_s": delay.get("mean_s"),
+            "sd_s": delay.get("sd_s"),
+            "basis": delay.get("basis"),
+        },
+    }
+
+
+def simulation_settings(scn):
+    """How the run itself is configured: the state of the building at t=0 and how long to run for."""
+    settings = (scn.get("simulation") or {}).get("simulation_settings") or {}
+    duration = settings.get("duration") or {}
+    return {
+        "start_conditions": settings.get("start_conditions"),
+        "duration": {"seconds": duration.get("seconds"), "basis": duration.get("basis")},
+    }
+
+
+def evacuation_time(scn):
+    """The AI's estimate of the time to clear the building, stated before the run — not a result.
+    The egress simulation this record feeds is what actually determines it."""
+    estimate = (scn.get("simulation") or {}).get("evacuation_time") or {}
+    return {
+        "estimated_total_s": estimate.get("estimated_total_s"),
+        "basis": estimate.get("basis"),
+        "source": "engineering estimate stated ahead of the run, not a simulation result",
     }
 
 
@@ -100,14 +128,16 @@ def build_records(obj):
             "regulatory_justification": scn.get("regulatory_justification"),
             "ai_explanation": scn.get("ai_explanation"),
             "scenario": {
-                "conditions": scn.get("conditions", {}),
+                "scenario_objective": scn.get("scenario_objective", {}),
+                "evacuation_routes": scn.get("evacuation_routes", {}),
                 "occupancy": _occupancy(scn),
                 "occupant_distribution": scn.get("occupant_distribution", []),
+                "simulation_settings": simulation_settings(scn),
                 "pre_movement_time": pre_movement_time(scn),
                 "movement_characteristic": movement_characteristic(scn),
+                "evacuation_time": evacuation_time(scn),
                 "fire_related_conditions": fire_related_conditions(scn),
                 "assumptions": scn.get("assumptions", []),
-                "routes": scn.get("routes", []),
                 "bottlenecks": scn.get("bottlenecks", []),
                 "risks": scn.get("risks", []),
             },

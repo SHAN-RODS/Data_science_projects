@@ -20,9 +20,11 @@ def build_records(obj):
     circulation = obj.get("circulation", [])
     records = []
     for scn in obj.get("scenarios", []):
-        cond = scn.get("conditions", {})
+        objective = scn.get("scenario_objective", {})
+        cond = objective.get("conditions", {})
+        routes = scn.get("evacuation_routes", {})
         elems = []
-        for eid in (cond.get("exits_available", []) + cond.get("exits_discounted", [])):
+        for eid in (routes.get("exits_available", []) + cond.get("exits_discounted", [])):
             e = exits.get(eid)
             elems.append({"id": eid, "name": (e or {}).get("name"), "ifc_type": "IfcDoor"})
         for c in circulation:
@@ -34,10 +36,11 @@ def build_records(obj):
             "regulatory_justification": scn.get("regulatory_justification"),
             "ai_explanation": scn.get("ai_explanation"),
             "scenario": {
-                "conditions": cond,
+                "scenario_objective": objective,
+                "evacuation_routes": routes,
+                "occupancy": scn.get("occupancy", {}),
                 "occupant_distribution": scn.get("occupant_distribution", []),
                 "assumptions": scn.get("assumptions", []),
-                "routes": scn.get("routes", []),
                 "bottlenecks": scn.get("bottlenecks", []),
                 "risks": scn.get("risks", []),
                 "narrative": scn.get("narrative"),

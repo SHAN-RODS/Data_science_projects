@@ -34,6 +34,12 @@ class Route(BaseModel):
     to_exit: str = Field(description="the exit name they leave by, e.g. 'Exit 2'")
     note: str = Field(default="", description="short note, e.g. approx distance or a caveat")
 
+class RestrictedArea(BaseModel):
+    area: str = Field(description="a space, stair or circulation area occupants must NOT use in this "
+                                  "scenario, named from the facts below — never invented")
+    reason: str = Field(description="why it is out of use in this scenario, e.g. smoke-logged from the "
+                                    "fire origin, closed for maintenance, lifts withdrawn on alarm")
+
 class ScenarioConditions(BaseModel):
     exits_available: List[str] = Field(description="exit names that stay open in this scenario, "
                                                    "e.g. ['Exit 1', 'Exit 2']")
@@ -46,13 +52,24 @@ class ScenarioConditions(BaseModel):
                                              "differ from every other scenario's total")
 
 DISTRIBUTIONS = "constant, uniform, normal, lognormal"
-class PreMovement(BaseModel):
+
+class ResponseDelay(BaseModel):
     distribution: str = Field(description=f"one of: {DISTRIBUTIONS}")
     mean_s: float = Field(description="mean pre-movement time in seconds")
     sd_s: float = Field(default=0.0, description="standard deviation in seconds (0 for constant)")
     basis: str = Field(description="why these values for THIS building and THIS scenario — the "
                                    "occupancy type, whether occupants may be asleep, and the alarm "
                                    "arrangement you are assuming")
+
+class PreMovement(BaseModel):
+    detection: str = Field(description="how and when the fire is detected in this scenario — the "
+                                       "detection arrangement assumed and roughly how long it takes")
+    alarm: str = Field(description="how the alarm is raised once detection occurs — the system type "
+                                   "and whether it sounds throughout or in phases")
+    recognition: str = Field(description="how long occupants take to recognise the alarm as a real "
+                                         "evacuation cue, and why — sleeping occupants take longer")
+    response_delay: ResponseDelay = Field(description="the pre-travel activity time once occupants "
+                                                      "have recognised the alarm, as a distribution")
 
 class OccupantProfile(BaseModel):
     name: str = Field(description="e.g. 'adult', 'child', 'reduced mobility'")
@@ -95,25 +112,53 @@ class FireConditions(BaseModel):
                                    "building — why this origin, and why it is a meaningful test")
 
 
+class SimulationDuration(BaseModel):
+    seconds: float = Field(description="how long to let the simulation run, in seconds — long enough "
+                                       "that everyone who can escape has escaped")
+    basis: str = Field(description="why this run length suits THIS scenario")
+
+class SimulationSettings(BaseModel):
+    start_conditions: str = Field(description="the state of the building at t=0, when the clock "
+                                              "starts: where occupants are, what they are doing, "
+                                              "which exits and routes are open, and whether the "
+                                              "alarm has yet sounded")
+    duration: SimulationDuration
+
+class EvacuationTime(BaseModel):
+    estimated_total_s: float = Field(description="your ESTIMATE of the total time to clear the "
+                                                 "building in this scenario, in seconds, measured "
+                                                 "from ignition. Must not exceed the run duration")
+    basis: str = Field(description="the arithmetic behind the estimate, quoting the values you used: "
+                                   "the pre-movement time plus travel over the longest route at the "
+                                   "walking speed in your profiles, plus any queueing you expect")
+
 class SimulationSetup(BaseModel):
     movement_model: str = Field(description="'steering' (agent-based) or 'sfpe' (hydraulic)")
-    end_time_s: float = Field(description="how long to let the simulation run, seconds")
+    simulation_settings: SimulationSettings
     pre_movement: PreMovement
     profiles: List[OccupantProfile] = Field(description="population mix; fractions must sum to 1.0")
     occupancy_multipliers: List[OccupancyMultiplier] = Field(
         default_factory=list,
         description="how you scaled the computed occupant load to reach this scenario's "
                     "occupants_total; omit or leave empty for a full-occupancy scenario")
+    evacuation_time: EvacuationTime
 
 class ScenarioContent(BaseModel):
     type: str = Field(description="e.g. 'night_occupancy', 'one_exit_discounted'")
     title: str
+    purpose: str = Field(description="what this scenario is FOR — the evacuation question it puts to "
+                                     "this building and what running it would settle, in one or two "
+                                     "sentences")
     conditions: ScenarioConditions
     assumptions: List[str]
     occupant_distribution: List[str] = Field(
         description="occupants per storey/area under THIS scenario's occupancy_multipliers, e.g. "
                     "'Floor_02: 8'; must sum to occupants_total and differ from the other scenarios")
     routes: List[Route]
+    restricted_areas: List[RestrictedArea] = Field(
+        default_factory=list,
+        description="spaces, stairs or circulation areas occupants must not use in this scenario, "
+                    "each with the reason it is out; leave empty only if nothing is restricted")
     bottlenecks: List[str]
     risks: List[str]
     narrative: str
@@ -160,11 +205,19 @@ _SYSTEM = (
     "scenario substantially different from the others.\n\n"
     "When a scenario discounts an exit, prefer one of the exits whose DEGRADED-CASE FACTS are supplied "
     "below, and use those recomputed numbers rather than the base-case ones.\n\n"
-    "For every scenario determine: occupancy_state, occupants_total, exits_available, exits_discounted, "
-    "occupant_distribution, routes (from_area -> via -> to_exit), bottlenecks, risks, assumptions and a "
+    "For every scenario determine: purpose, occupancy_state, occupants_total, exits_available, "
+    "exits_discounted, occupant_distribution, routes (from_area -> via -> to_exit), restricted_areas, "
+    "bottlenecks, risks, assumptions and a "
     "short plain-English narrative. occupants_total must be consistent with your occupant_distribution "
     "and must sit below the computed total occupant load; say in that scenario's assumptions which "
     "population you have taken out of the building and why.\n\n"
+    "  * purpose — what the scenario is FOR: the evacuation question it puts to THIS building and what "
+    "running it would settle. Not a restatement of the title, and not the same sentence four times.\n"
+    "  * restricted_areas — the spaces, stairs or circulation areas occupants must NOT use in this "
+    "scenario, each with the reason it is out (smoke-logged from the fire origin, closed for "
+    "maintenance, lifts withdrawn on alarm). Name them from the facts below; never invent an area. "
+    "These must agree with the fire you describe: an area your smoke_conditions make untenable belongs "
+    "here. Leave the list empty only if genuinely nothing is restricted.\n\n"
     "VARY THE OCCUPANCY ACROSS THE SET — DO NOT REPEAT ONE POPULATION.\n"
     "The computed total occupant load is a CAPACITY CEILING, not a scenario. Never write a scenario "
     "that simply puts the whole computed load in the building: no real evacuation happens with every "
@@ -211,7 +264,7 @@ _SYSTEM = (
     "you say what. If the scenario discounts nothing, leave these empty.\n"
     "  * detection_and_alarm — the detection and alarm arrangement assumed and when occupants become "
     "aware. Pre-movement time is measured from that moment, so it must agree with the pre_movement "
-    "basis you give in the simulation block.\n"
+    "detection, alarm and recognition you give in the simulation block.\n"
     "  * smoke_conditions — where smoke spreads and how it degrades those routes.\n"
     "  * basis — why this origin, in THIS building, is a meaningful test.\n"
     "Vary the fire across the set for the same reason you vary the occupancy: four scenarios with the "
@@ -221,11 +274,21 @@ _SYSTEM = (
     "is different: it is the egress-simulation set-up, and you decide it per scenario. Give:\n"
     "  * movement_model — 'steering' (agent-based, shows queueing and route choice) or 'sfpe' "
     "(hydraulic flow); say which suits the scenario.\n"
-    "  * end_time_s — long enough that everyone who can escape has escaped.\n"
-    "  * pre_movement — the pre-travel activity time as a DISTRIBUTION, not a single number. Choose "
-    "values that fit this building's occupancy and whether occupants may be asleep, and state the alarm "
-    "arrangement you are assuming in `basis`. Typical engineering practice sits well under 30 minutes; "
-    "a sleeping residential occupancy warrants a longer and more spread-out time than an alert one.\n"
+    "  * simulation_settings — how the run is configured. `start_conditions` describes the building "
+    "at t=0, the moment the clock starts: where occupants are and what they are doing, which exits "
+    "and routes are open, and whether the alarm has sounded yet. It must agree with this scenario's "
+    "occupancy state, its available exits and its restricted areas. `duration` is how long to let "
+    "the run go — long enough that everyone who can escape has escaped — with its `basis`.\n"
+    "  * pre_movement — the time from ignition to occupants starting to move, broken into its four "
+    "parts. Three are short prose statements of the assumption: `detection` (how and roughly how "
+    "quickly the fire is detected), `alarm` (how the alarm is raised once it is — system type, "
+    "throughout or phased), and `recognition` (how long occupants take to read the alarm as a real "
+    "evacuation cue, and why). The fourth, `response_delay`, is the pre-travel activity time once they "
+    "have recognised it, given as a DISTRIBUTION, not a single number: choose values that fit this "
+    "building's occupancy and whether occupants may be asleep, and give your reasoning in its `basis`. "
+    "Typical engineering practice puts that delay well under 30 minutes; a sleeping residential "
+    "occupancy warrants a longer and more spread-out time than an alert one. All four must tell one "
+    "consistent story, and it must be the same story as fire_conditions.detection_and_alarm.\n"
     "  * profiles — the population mix (e.g. adults, children, reduced mobility), each with a walking "
     "speed distribution and shoulder width. Unimpeded walking speeds for able adults on the level are "
     "around 1.2 m/s and should stay inside 0.5-2.0 m/s; shoulder widths sit around 0.45-0.5 m. The "
@@ -243,6 +306,14 @@ _SYSTEM = (
     "factor allows and the result would no longer be code-based. To make a scenario MORE demanding, "
     "discount an exit, lengthen pre-movement, or shift the population mix towards slower profiles — "
     "never inflate occupancy.\n"
+    "  * evacuation_time — your ESTIMATE of how long this scenario takes to clear the building, "
+    "measured from ignition. Work it out rather than guessing it: the pre-movement time, plus travel "
+    "over the LONGEST computed route in this scenario at the walking speed in your own profiles, plus "
+    "whatever queueing the exit widths and occupant numbers lead you to expect. Quote that arithmetic "
+    "in `basis`, using the computed distances as given. It must not exceed your run duration — a run "
+    "that ends before the building is clear has not answered the question. This figure is an "
+    "engineering estimate stated up front, NOT a simulation result: the egress simulation is what "
+    "actually determines the evacuation time, and it may well disagree with you.\n"
     "Every one of these carries a `basis` / `reason` field: state your engineering reasoning there. "
     "These are the only numbers in the whole output you are permitted to originate — everything else "
     "must still come verbatim from the computed facts.\n\n"
@@ -494,26 +565,36 @@ def model_block(summary):
 
 
 def assemble_scenario(sc, number, names):
+    # occupancy_state and occupants_total live in the occupancy block alone — attach_occupancy() reads
+    # them from here and returns them in the full block, so they are stated once per scenario.
     return {
         "id": f"SCN-{number:03d}",
         "type": sc.type,
         "title": name_exit_ids(sc.title, names),
-        "conditions": {
+        "scenario_objective": {
+            "purpose": name_exit_ids(sc.purpose, names),
+            "conditions": {
+                "exits_discounted": name_exit_ids(sc.conditions.exits_discounted, names),
+                "exits_discounted_ifc_ids": resolve_exit_ids(sc.conditions.exits_discounted, names),
+            },
+        },
+        "evacuation_routes": {
             "exits_available": name_exit_ids(sc.conditions.exits_available, names),
-            "exits_discounted": name_exit_ids(sc.conditions.exits_discounted, names),
             "exits_available_ifc_ids": resolve_exit_ids(sc.conditions.exits_available, names),
-            "exits_discounted_ifc_ids": resolve_exit_ids(sc.conditions.exits_discounted, names),
-            "occupancy_state": sc.conditions.occupancy_state,
-            "occupants_total": sc.conditions.occupants_total,
+            "routes": [name_exit_ids(r.model_dump(), names) for r in sc.routes],
+            "restricted_areas": [name_exit_ids(a.model_dump(), names) for a in sc.restricted_areas],
         },
         "assumptions": name_exit_ids(sc.assumptions, names),
         "occupant_distribution": name_exit_ids(sc.occupant_distribution, names),
-        "routes": [name_exit_ids(r.model_dump(), names) for r in sc.routes],
         "bottlenecks": name_exit_ids(sc.bottlenecks, names),
         "risks": name_exit_ids(sc.risks, names),
         "narrative": name_exit_ids(sc.narrative, names),
         "fire_conditions": name_exit_ids(sc.fire_conditions.model_dump(), names),
         "simulation": sc.simulation.model_dump(),
+        "occupancy": {
+            "occupants_total": sc.conditions.occupants_total,
+            "occupancy_state": sc.conditions.occupancy_state,
+        },
         "regulatory_justification": name_exit_ids(sc.regulatory_justification, names),
         "ai_explanation": name_exit_ids(sc.ai_explanation, names),
     }
@@ -622,7 +703,8 @@ if __name__ == "__main__":
     print(f"Total occupant load (computed): {obj['building']['total_occupant_load']}")
     for scn in obj["scenarios"]:
         print(f"\n{scn['id']} ({scn['type']}) — {scn['title']}")
-        print(f"conditions: {scn['conditions']}")
-        print(f"routes: {len(scn['routes'])} | bottlenecks: {len(scn['bottlenecks'])} "
-              f"| risks: {len(scn['risks'])}")
+        print(f"objective: {scn['scenario_objective']}")
+        print(f"routes: {len(scn['evacuation_routes']['routes'])} "
+              f"| restricted areas: {len(scn['evacuation_routes']['restricted_areas'])} "
+              f"| bottlenecks: {len(scn['bottlenecks'])} | risks: {len(scn['risks'])}")
         print(f"narrative: {scn['narrative'][:280]}...")

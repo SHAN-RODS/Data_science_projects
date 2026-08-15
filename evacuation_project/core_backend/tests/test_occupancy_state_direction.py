@@ -18,9 +18,9 @@ def _object(night_total, day_total, sleeping_load=30, other_load=10):
             {"guid": "B", "use_type": "commercial", "occupant_load": other_load},
         ],
         "scenarios": [
-            {"id": "SCN-NIGHT", "conditions": {"occupancy_state": "night",
+            {"id": "SCN-NIGHT", "occupancy": {"occupancy_state": "night",
                                                "occupants_total": night_total}},
-            {"id": "SCN-DAY", "conditions": {"occupancy_state": "daytime peak",
+            {"id": "SCN-DAY", "occupancy": {"occupancy_state": "daytime peak",
                                              "occupants_total": day_total}},
         ],
     }
@@ -57,23 +57,23 @@ def test_check_needs_both_states_to_compare():
 
 
 def test_states_are_read_from_free_text():
-    assert state_of({"conditions": {"occupancy_state": "night, occupants asleep"}}) == "night"
-    assert state_of({"conditions": {"occupancy_state": "Daytime peak occupancy"}}) == "day"
-    assert state_of({"conditions": {"occupancy_state": "maintenance closure"}}) is None
+    assert state_of({"occupancy": {"occupancy_state": "night, occupants asleep"}}) == "night"
+    assert state_of({"occupancy": {"occupancy_state": "Daytime peak occupancy"}}) == "day"
+    assert state_of({"occupancy": {"occupancy_state": "maintenance closure"}}) is None
 
 
 def test_the_worst_scenario_of_each_state_is_the_one_compared():
     """Several night scenarios: the fullest one carries the comparison, not whichever came first."""
     obj = _object(night_total=8, day_total=20)
     obj["scenarios"].append({"id": "SCN-NIGHT-2",
-                             "conditions": {"occupancy_state": "night", "occupants_total": 35}})
+                             "occupancy": {"occupancy_state": "night", "occupants_total": 35}})
     assert occupancy_state_issues(obj) == []
 
 
 def _varied_set():
     """Four scenarios that genuinely differ: different totals, different multipliers."""
     def scn(sid, state, total, dwelling, commercial):
-        return {"id": sid, "conditions": {"occupancy_state": state, "occupants_total": total},
+        return {"id": sid, "occupancy": {"occupancy_state": state, "occupants_total": total},
                 "simulation": {"occupancy_multipliers": [
                     {"use_type": "dwelling", "multiplier": dwelling, "reason": "r"},
                     {"use_type": "commercial", "multiplier": commercial, "reason": "r"}]}}
@@ -93,14 +93,14 @@ def test_a_genuinely_varied_set_passes():
 
 def test_a_scenario_at_the_full_computed_load_is_flagged():
     obj = _varied_set()
-    obj["scenarios"][0]["conditions"]["occupants_total"] = 40      # the whole computed ceiling
+    obj["scenarios"][0]["occupancy"]["occupants_total"] = 40      # the whole computed ceiling
     issues = occupancy_variance_issues(obj)
     assert any("capacity ceiling" in i["issue"] for i in issues)
 
 
 def test_repeated_totals_are_flagged():
     obj = _varied_set()
-    obj["scenarios"][2]["conditions"]["occupants_total"] = 27      # same as SCN-001
+    obj["scenarios"][2]["occupancy"]["occupants_total"] = 27      # same as SCN-001
     issues = occupancy_variance_issues(obj)
     flagged = next(i for i in issues if i["field"] == "occupants_total")
     assert "SCN-001" in flagged["scenario"] and "SCN-003" in flagged["scenario"]
@@ -146,9 +146,9 @@ def test_a_single_scenario_has_nothing_to_vary_against():
 
 def test_validate_reports_the_invariant():
     obj = _minimal_object("Evacuate 10 occupants.")
-    obj["scenarios"][1]["conditions"]["occupancy_state"] = "day"
-    obj["scenarios"][1]["conditions"]["occupants_total"] = 10
-    obj["scenarios"][0]["conditions"]["occupants_total"] = 4     # night quieter than day: inverted
+    obj["scenarios"][1]["occupancy"]["occupancy_state"] = "day"
+    obj["scenarios"][1]["occupancy"]["occupants_total"] = 10
+    obj["scenarios"][0]["occupancy"]["occupants_total"] = 4     # night quieter than day: inverted
 
     out = validate(copy.deepcopy(obj))
     assert out["validation"]["invariants_checked"]["night_occupancy_not_below_day"] is False
