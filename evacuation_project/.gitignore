@@ -20,11 +20,5 @@ ifc_uploads/
 core_backend/Approved_Document_B_volume_1_Dwellings_2019_edition_incorporating_2020_2022_and_2025_amendments_collated_with_2026_and_2029_amendments.pdf
 
 # Untracked working/draft files not yet pushed
-core_backend/export_results_1.py
-core_backend/ifc_parser_1.py
-core_backend/ifc_parser_test.py
-core_backend/regulation_check_1.py
-core_backend/scenario_llm_1.py
-frontend/app_1.py
 regulations_doc/
 cplan.md
