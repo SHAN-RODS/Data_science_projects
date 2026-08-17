@@ -18,7 +18,8 @@ from core_backend.occupant_placement import attach_occupancy
 from core_backend.space_classifier import classify_spaces
 from core_backend.uk_regulation_checking import regulation_gate, load_regs
 from core_backend.sample_paths import resolve_ifc
-from core_backend.validation import SLEEPING_SHARE_THRESHOLD, sleeping_share, state_of_text
+from core_backend.validation import (SLEEPING_SHARE_THRESHOLD, sleeping_occupancy, sleeping_share,
+                                     state_of_text)
 
 DISTANCE_METHOD = ("geodesic shortest path over a per-storey walkable raster (0.1 m cells) from each "
                    "room's most remote point, plus stair-going descent for upper storeys — a "
@@ -258,8 +259,14 @@ SYSTEM_PROMPT = (
     "'dwelling' or 'bedroom' multiplier well below 1.0), while commercial and communal_amenity space "
     "runs at or near full. In a wholly or mostly residential building this makes the daytime "
     "population the SMALLER of the two.\n"
-    "Never give a mostly-residential building night multipliers that leave fewer people inside than "
-    "its day multipliers — that is backwards. If you write both states, give the multipliers that "
+    "The test applied to your answer is on RESIDENTIAL space alone: a night state must leave at "
+    "least as many occupants in sleeping space (dwelling, bedroom, living, kitchen, kitchen_living, "
+    "dining, sauna) as any daytime state does. Emptying commercial and communal_amenity at night is "
+    "correct and is NOT counted against you — the building's TOTAL headcount may well be lower at "
+    "night, and on a building with a large amenity it should be. What must not happen is dwellings "
+    "thinner at night than by day. Beware of naming a state 'residential load at peak' and then "
+    "giving it a dwelling multiplier below your daytime one: the label and the numbers must agree, "
+    "and the numbers are what reaches the study. If you write both states, give the multipliers that "
     "produce each and say in the assumptions which population you have taken out of the building.\n\n"
     "FIRE-RELATED CONDITIONS — one block per scenario, and they must match the scenario.\n"
     "The IFC carries the geometry and the facts below carry the people; nothing carries the fire, so "
@@ -683,24 +690,27 @@ def direction_findings(analysis, spaces):
     for number, sc in enumerate(analysis.scenarios, start=1):
         state = state_of_text(sc.conditions.occupancy_state)
         if state:
-            by_state[state].append((f"scenario {number} ({sc.type})", room_capacity(spaces, sc)))
+            residents = sleeping_occupancy(spaces, {m.use_type: float(m.multiplier or 0)
+                                                    for m in (sc.simulation.occupancy_multipliers or [])})
+            by_state[state].append((f"scenario {number} ({sc.type})", residents))
     if not by_state["night"] or not by_state["day"]:
         return []
 
     # the fullest scenario of each state carries the comparison — a quiet night variant sitting
     # beside a full one is a variant, not an inversion
-    night_label, night_total = max(by_state["night"], key=lambda r: r[1])
-    day_label, day_total = max(by_state["day"], key=lambda r: r[1])
-    if night_total >= day_total:
+    night_label, night_residents = max(by_state["night"], key=lambda r: r[1])
+    day_label, day_residents = max(by_state["day"], key=lambda r: r[1])
+    if night_residents >= day_residents:
         return []
-    return [f"{night_label} is a night state and its multipliers seat {night_total} occupant(s), but "
-            f"{day_label} is a daytime state and seats {day_total} — inverted for a building where "
-            f"{share:.0%} of the computed occupant load sleeps on site. Residents are home and asleep "
-            f"at night and out during the day, so the night state must hold at least as many people "
-            f"as the day state. Raise the night scenario's residential multipliers (dwelling, "
-            f"bedroom, living, kitchen, kitchen_living, dining) towards 1.0 and thin the daytime "
-            f"one's well below it. Do not fix this by renaming the states — the populations are what "
-            f"is wrong, not the labels."]
+    return [f"{night_label} is a night state and its multipliers leave {night_residents} occupant(s) "
+            f"in sleeping space, but {day_label} is a daytime state and leaves {day_residents} — "
+            f"inverted for a building where {share:.0%} of the computed occupant load sleeps on "
+            f"site. Residents are home and asleep at night and out during the day, so raise the "
+            f"night scenario's residential multipliers (dwelling, bedroom, living, kitchen, "
+            f"kitchen_living, dining, sauna) towards 1.0 and thin the daytime one's below them. "
+            f"Occupancy of amenity and commercial space is NOT part of this comparison — emptying "
+            f"them at night is correct and will not fix this. Do not fix it by renaming the states "
+            f"either; the residential populations are what is wrong, not the labels."]
 
 
 def occupancy_findings(analysis, spaces):

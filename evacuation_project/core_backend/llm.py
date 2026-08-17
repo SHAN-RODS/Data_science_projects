@@ -80,8 +80,12 @@ def structured_output(llm, schema, include_raw=True):
     (its own TODO says so) — so a reply that skips the tool parses to None and the whole run is
     lost. Its json_schema method puts the schema in ``response_format`` where the API enforces it.
 
-    Anthropic's json_schema method uses Claude's own structured outputs, where the schema is
-    enforced server-side rather than by convention. Claude also forces the tool by name, so either
-    path holds; this one cannot come back shaped wrong at all.
+    Anthropic cannot take json_schema for BuildingAnalysis. That path compiles the schema into a
+    server-side grammar, and this one is too big for it — the API rejects the request outright with
+    "The compiled grammar is too large". Claude forces a tool BY NAME, though, so tool calling holds
+    the shape just as firmly and skips the grammar step; the reply still arrives schema-validated by
+    the parser. This is the asymmetry the two providers force: Mistral needs json_schema because it
+    cannot force a named tool, Anthropic needs function_calling because it cannot compile this one.
     """
-    return llm.with_structured_output(schema, method="json_schema", include_raw=include_raw)
+    method = "function_calling" if isinstance(llm, ChatAnthropic) else "json_schema"
+    return llm.with_structured_output(schema, method=method, include_raw=include_raw)

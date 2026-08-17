@@ -293,19 +293,52 @@ def state_of(scenario):
     return state_of_text((scenario.get("occupancy") or {}).get("occupancy_state"))
 
 
+def multipliers_of(scenario):
+    """The scenario's per-use_type multipliers as a plain dict. A use type the scenario never names
+    is absent here, and every caller defaults it to 1.0 — untouched, not emptied."""
+    sim = scenario.get("simulation") or {}
+    out = {}
+    for m in sim.get("occupancy_multipliers") or []:
+        use_type = m.get("use_type")
+        if use_type:
+            out[use_type] = float(m.get("multiplier") or 0)
+    return out
+
+
+def sleeping_occupancy(spaces, multipliers):
+    """How many occupants a multiplier set leaves in space where people sleep.
+
+    The night/day comparison must be made over these rooms ALONE. Total headcount is the wrong
+    measure: on a building whose non-sleeping space carries most of the load — a block of flats with
+    a large communal amenity — any sane night state empties that amenity, so the total falls below
+    the day's no matter how full the dwellings are. That made the invariant unreachable rather than
+    merely unmet, and the model burned repair attempts failing to satisfy arithmetic that could not
+    be satisfied. Residential occupancy is what 'residents are home at night and out by day'
+    actually claims, and it can always be met."""
+    total = 0.0
+    for s in spaces:
+        use_type = s.get("use_type")
+        if use_type in SLEEPING_USE_TYPES:
+            total += (s.get("occupant_load") or 0) * multipliers.get(use_type, 1.0)
+    return int(total)
+
+
 def occupancy_state_issues(obj):
-    """Flag a sleeping-occupancy building whose night state holds fewer people than its day state."""
+    """Flag a sleeping-occupancy building whose night state holds fewer RESIDENTS than its day state.
+
+    Compared over sleeping-use rooms only — see sleeping_occupancy() for why the total is the wrong
+    measure. Amenity and commercial space is deliberately outside the comparison: emptying it at
+    night is correct behaviour, not a fault, and counting it hid the fault that matters."""
     share = sleeping_share(obj)
     if share < SLEEPING_SHARE_THRESHOLD:
         return []
 
+    spaces = obj.get("spaces", [])
     by_state = {"night": [], "day": []}
     for scn in obj.get("scenarios", []):
         state = state_of(scn)
         if state:
-            total = scenario_total(scn)
-            if isinstance(total, int):
-                by_state[state].append((scn.get("id"), total))
+            by_state[state].append((scn.get("id"), sleeping_occupancy(spaces, multipliers_of(scn))))
     if not by_state["night"] or not by_state["day"]:
         return []
 
@@ -313,12 +346,14 @@ def occupancy_state_issues(obj):
     day_id, day_total = max(by_state["day"], key=lambda r: r[1])
     if night_total >= day_total:
         return []
-    return [{"scenario": night_id, "field": "occupants_total",
-             "issue": f"night occupancy is {night_total} but daytime occupancy ({day_id}) is "
-                      f"{day_total} — inverted for a building where {share:.0%} of the computed "
-                      f"occupant load sleeps on site. Residents are home and asleep at night, so the "
-                      f"night state should hold at least as many people as the day state; check this "
-                      f"scenario's occupancy_multipliers"}]
+    return [{"scenario": night_id, "field": "simulation.occupancy_multipliers",
+             "issue": f"this night state leaves {night_total} occupant(s) in sleeping space, but the "
+                      f"daytime state ({day_id}) leaves {day_total} — inverted for a building where "
+                      f"{share:.0%} of the computed occupant load sleeps on site. Residents are home "
+                      f"and asleep at night and out during the day, so raise this scenario's "
+                      f"residential multipliers (dwelling, bedroom, living, kitchen, kitchen_living, "
+                      f"dining, sauna) towards 1.0 and thin the daytime one's below them. Occupancy "
+                      f"of amenity and commercial space is not part of this comparison"}]
 
 
 def multiplier_signature(scenario):

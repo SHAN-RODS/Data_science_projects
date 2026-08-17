@@ -144,9 +144,26 @@ def test_a_night_thinner_than_its_day_is_repaired():
 
     assert len(llm.prompts) == 2
     assert "inverted" in llm.prompts[1]
-    assert "seat 22 occupant(s)" in llm.prompts[1]      # night: (40 + 34) * 0.3
-    assert "seats 74" in llm.prompts[1]                 # day at the full computed load
+    assert "leave 22 occupant(s) in sleeping space" in llm.prompts[1]   # night: (40 + 34) * 0.3
+    assert "leaves 74" in llm.prompts[1]                                # day at the full load
     assert [total_of(sc) for sc in analysis.scenarios] == [74, 22]
+
+
+def test_an_amenity_heavy_building_is_not_flagged_for_emptying_it_at_night():
+    """The real building this invariant was rewritten for. communal_amenity carries most of the
+    computed load, so a night state that empties it — which its own state text says, and which is
+    correct — lands far below the day TOTAL however full the dwellings are. Comparing totals made
+    that unsatisfiable and spent every repair attempt on it. Residential occupancy is 27 at night
+    against 10 by day, so the set is right and the check must stay silent."""
+    mixed = [{"guid": "a", "use_type": "dwelling", "occupant_load": 27},
+             {"guid": "b", "use_type": "communal_amenity", "occupant_load": 48}]
+    night = scenario({"dwelling": 1.0, "communal_amenity": 0.0}, "night")
+    day = scenario({"dwelling": 0.4, "communal_amenity": 1.0}, "day")
+    built = BuildingAnalysis(scenarios=[night, day])
+
+    assert room_capacity(mixed, built.scenarios[0]) == 27      # night TOTAL, well below the day's
+    assert room_capacity(mixed, built.scenarios[1]) == 58      # day TOTAL
+    assert direction_findings(built, mixed) == []              # residential: 27 >= 10, correct
 
 
 def test_a_night_above_its_day_passes():
