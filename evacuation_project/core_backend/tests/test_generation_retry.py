@@ -17,11 +17,18 @@ from core_backend.scenario_generation_llm_1 import (BuildingAnalysis, NoStructur
                                                     invoke_structured)
 
 
+def structured_reply(parsed=None, parsing_error=None, raw=None):
+    """The shape ``with_structured_output(include_raw=True)`` returns: a parse failure arrives as
+    data on the same dict rather than as an exception, so the reason a reply was unusable can be
+    read off the provider's own metadata."""
+    return {"raw": raw, "parsed": parsed, "parsing_error": parsing_error}
+
+
 def sample_scenario(multiplier):
     return {
         "id": "S1", "type": "base_case", "title": "Base", "purpose": "p",
-        "conditions": {"exits_available": ["E"], "exits_discounted": [],
-                       "occupants_total": 10, "occupancy_state": "day"},
+        "conditions": {"exits_available": ["E"], "occupancy_state": "day",
+                       "exits_discounted": []},
         "assumptions": [], "occupant_distribution": [], "routes": [], "restricted_areas": [],
         "bottlenecks": [], "risks": [],
         "narrative": "n",
@@ -53,14 +60,20 @@ class FakeLLM:
         self.sequence = sequence
         self.prompts = []
 
-    def with_structured_output(self, model):
+    def with_structured_output(self, model, **kwargs):
         llm = self
 
         class Structured:
             def invoke(self, prompt):
                 llm.prompts.append(prompt)
                 index = min(len(llm.prompts) - 1, len(llm.sequence) - 1)
-                return BuildingAnalysis(scenarios=[sample_scenario(llm.sequence[index])])
+                # include_raw catches the validation failure rather than raising it, as the real
+                # parser does — the caller reads it off parsing_error
+                try:
+                    parsed = BuildingAnalysis(scenarios=[sample_scenario(llm.sequence[index])])
+                except ValidationError as exc:
+                    return structured_reply(parsing_error=exc)
+                return structured_reply(parsed)
 
         return Structured()
 
@@ -107,18 +120,28 @@ def test_attempts_are_bounded():
     assert len(llm.prompts) == 2
 
 
-class SilentLLM:
-    """A reply carrying no tool call parses to None instead of raising.
+class RawReply:
+    """A provider message as the parser hands it back — metadata and text, nothing parsed."""
 
-    Seen in practice when the reply runs past the token ceiling part-way through the structure.
-    ``replies`` is what each attempt returns, sticking on the last one.
+    def __init__(self, stop=None, content="", output_tokens=None):
+        self.response_metadata = {"finish_reason": stop} if stop else {}
+        self.usage_metadata = {"output_tokens": output_tokens} if output_tokens else {}
+        self.content = content
+
+
+class SilentLLM:
+    """A reply carrying no structure parses to None instead of raising.
+
+    Seen in practice on providers that cannot be forced to call a named tool, and when a reply runs
+    past the token ceiling part-way through. ``replies`` is what each attempt returns, sticking on
+    the last one.
     """
 
     def __init__(self, replies):
         self.replies = replies
         self.prompts = []
 
-    def with_structured_output(self, model):
+    def with_structured_output(self, model, **kwargs):
         llm = self
 
         class Structured:
@@ -132,7 +155,8 @@ class SilentLLM:
 
 def test_an_empty_reply_is_retried_not_handed_back_as_none():
     # returning None here reached the caller as `'NoneType' object has no attribute 'scenarios'`
-    llm = SilentLLM([None, BuildingAnalysis(scenarios=[sample_scenario(1.0)])])
+    llm = SilentLLM([structured_reply(raw=RawReply(stop="stop")),
+                     structured_reply(BuildingAnalysis(scenarios=[sample_scenario(1.0)]))])
 
     analysis = invoke_structured(llm, "PROMPT")
 
@@ -142,11 +166,32 @@ def test_an_empty_reply_is_retried_not_handed_back_as_none():
     assert "no structured result" in llm.prompts[1]
 
 
-def test_a_model_that_never_replies_fails_with_an_actionable_error():
-    llm = SilentLLM([None])
+def test_a_truncated_reply_says_so_and_names_the_ceiling():
+    """The error must report what the provider said, not guess. A cut-off is the one case where
+    raising the ceiling is the right advice, so it is the only case that gives it."""
+    llm = SilentLLM([structured_reply(raw=RawReply(stop="length", output_tokens=24000))])
 
     with pytest.raises(NoStructuredReply) as excinfo:
         invoke_structured(llm, "PROMPT", attempts=2)
 
     assert len(llm.prompts) == 2
-    assert "EVAC_GEN_MAX_TOKENS" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "cut off" in message
+    assert "24000 tokens" in message
+    assert "EVAC_GEN_MAX_TOKENS" in message
+
+
+def test_a_prose_reply_quotes_what_the_model_said_instead():
+    """The failure this project actually hits: the model answers in prose because its provider
+    cannot be forced to call a named tool. Blaming the token ceiling here sends the reader to the
+    wrong knob, so the message quotes the reply instead."""
+    llm = SilentLLM([structured_reply(
+        raw=RawReply(stop="stop", content="I cannot produce that structure because"))])
+
+    with pytest.raises(NoStructuredReply) as excinfo:
+        invoke_structured(llm, "PROMPT", attempts=1)
+
+    message = str(excinfo.value)
+    assert "prose instead of the structure" in message
+    assert "I cannot produce that structure" in message
+    assert "EVAC_GEN_MAX_TOKENS" not in message

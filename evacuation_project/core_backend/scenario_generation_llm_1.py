@@ -9,7 +9,7 @@ from typing import List
 
 from pydantic import BaseModel, Field, ValidationError
 
-from core_backend.llm import select_llm
+from core_backend.llm import select_llm, structured_output
 from core_backend.egress import build_graph, ground_spaces, discount_exit, stair_adjacency
 from core_backend.exit_names import exit_names, name_exit_ids, named, resolve_exit_ids
 from core_backend.occupancy import jurisdiction_source
@@ -18,6 +18,7 @@ from core_backend.occupant_placement import attach_occupancy
 from core_backend.space_classifier import classify_spaces
 from core_backend.uk_regulation_checking import regulation_gate, load_regs
 from core_backend.sample_paths import resolve_ifc
+from core_backend.validation import SLEEPING_SHARE_THRESHOLD, sleeping_share, state_of_text
 
 DISTANCE_METHOD = ("geodesic shortest path over a per-storey walkable raster (0.1 m cells) from each "
                    "room's most remote point, plus stair-going descent for upper storeys — a "
@@ -47,9 +48,9 @@ class ScenarioConditions(BaseModel):
                                         description="exit names assumed blocked/unavailable, "
                                                     "e.g. ['Exit 3']")
     occupancy_state: str = Field(description="e.g. 'night', 'day', 'peak occupancy'")
-    occupants_total: int = Field(description="occupants to evacuate under this scenario's state; must "
-                                             "sit below the computed total occupant load, and must "
-                                             "differ from every other scenario's total")
+    # no occupants_total — the multipliers already determine it, and the model guessing the sum was
+    # what drove the repair loop. room_capacity() computes it from the same arithmetic that seats
+    # the occupants downstream, so the two can no longer disagree.
 
 DISTRIBUTIONS = "constant, uniform, normal, lognormal"
 
@@ -139,8 +140,9 @@ class SimulationSetup(BaseModel):
     profiles: List[OccupantProfile] = Field(description="population mix; fractions must sum to 1.0")
     occupancy_multipliers: List[OccupancyMultiplier] = Field(
         default_factory=list,
-        description="how you scaled the computed occupant load to reach this scenario's "
-                    "occupants_total; omit or leave empty for a full-occupancy scenario")
+        description="how you thin the computed occupant load for this scenario's state, per use type. "
+                    "These ARE the scenario's population — the occupant total and the per-room counts "
+                    "are computed from them — so give an explicit set, with at least one below 1.0")
     evacuation_time: EvacuationTime
 
 class ScenarioContent(BaseModel):
@@ -152,8 +154,10 @@ class ScenarioContent(BaseModel):
     conditions: ScenarioConditions
     assumptions: List[str]
     occupant_distribution: List[str] = Field(
-        description="occupants per storey/area under THIS scenario's occupancy_multipliers, e.g. "
-                    "'Floor_02: 8'; must sum to occupants_total and differ from the other scenarios")
+        description="where THIS scenario's occupancy_multipliers leave the population, one line per "
+                    "storey or area, e.g. 'Floor_02: dwellings fully occupied, circulation empty'. "
+                    "Describe which areas hold people and which are emptied — never state a headcount: "
+                    "the per-room counts are computed from your multipliers and reported separately")
     routes: List[Route]
     restricted_areas: List[RestrictedArea] = Field(
         default_factory=list,
@@ -173,9 +177,9 @@ class BuildingAnalysis(BaseModel):
     scenarios: List[ScenarioContent] = Field(
         description="At least FOUR distinct scenarios, selected autonomously from this building's "
                     "geometry, exit arrangement, storeys, occupant distribution and computed travel "
-                    "distances — not chosen at random. Each must carry a DIFFERENT occupants_total and "
-                    "a DIFFERENT occupancy_multipliers set: no two scenarios may put the same number "
-                    "of people in the same rooms. None may sit at the full computed occupant load.")
+                    "distances — not chosen at random. Each must carry a DIFFERENT occupancy_multipliers "
+                    "set: no two scenarios may put the same population in the same rooms. None may sit "
+                    "at the full computed occupant load — keep at least one multiplier below 1.0.")
 
 SYSTEM_PROMPT = (
     "You are a fire-safety engineer preparing whole-building evacuation SCENARIOS (the input description "
@@ -205,12 +209,16 @@ SYSTEM_PROMPT = (
     "scenario substantially different from the others.\n\n"
     "When a scenario discounts an exit, prefer one of the exits whose DEGRADED-CASE FACTS are supplied "
     "below, and use those recomputed numbers rather than the base-case ones.\n\n"
-    "For every scenario determine: purpose, occupancy_state, occupants_total, exits_available, "
-    "exits_discounted, occupant_distribution, routes (from_area -> via -> to_exit), restricted_areas, "
-    "bottlenecks, risks, assumptions and a "
-    "short plain-English narrative. occupants_total must be consistent with your occupant_distribution "
-    "and must sit below the computed total occupant load; say in that scenario's assumptions which "
-    "population you have taken out of the building and why.\n\n"
+    "For every scenario determine: purpose, occupancy_state, exits_available, "
+    "exits_discounted, occupancy_multipliers, occupant_distribution, routes (from_area -> via -> "
+    "to_exit), restricted_areas, bottlenecks, risks, assumptions and a "
+    "short plain-English narrative. Say in that scenario's assumptions which population you have "
+    "taken out of the building and why.\n\n"
+    "DO NOT STATE OCCUPANT HEADCOUNTS ANYWHERE IN YOUR PROSE.\n"
+    "You set the occupancy_multipliers; the occupant total and the per-room counts are then COMPUTED "
+    "from them against the code-derived room loads, and reported alongside your scenario. A number you "
+    "write yourself can only disagree with the computed one. Describe occupancy by state and by "
+    "multiplier — 'dwellings at full night occupancy, commercial empty' — never '47 occupants'.\n\n"
     "  * purpose — what the scenario is FOR: the evacuation question it puts to THIS building and what "
     "running it would settle. Not a restatement of the title, and not the same sentence four times.\n"
     "  * restricted_areas — the spaces, stairs or circulation areas occupants must NOT use in this "
@@ -224,10 +232,11 @@ SYSTEM_PROMPT = (
     "room simultaneously at its code capacity, and a set whose scenarios all carry the same total and "
     "the same distribution tells the study nothing — it is the same simulation run four times. These "
     "are binding:\n"
-    "  * Every scenario sits BELOW the computed total occupant load, and every scenario carries an "
-    "explicit occupancy_multipliers set. None may be left empty.\n"
-    "  * No two scenarios may share the same occupants_total. Make the totals meaningfully different, "
-    "not a token occupant or two apart.\n"
+    "  * Every scenario carries an explicit occupancy_multipliers set, and at least one multiplier "
+    "below 1.0 so the scenario sits BELOW the computed total occupant load. None may be left empty.\n"
+    "  * No two scenarios may share the same multipliers. Because the totals are computed from them, "
+    "meaningfully different multipliers are what makes the populations meaningfully different — a "
+    "token 0.05 apart is not.\n"
     "  * Vary WHERE the people are, not only how many. Two scenarios with the same multipliers seed "
     "occupants into exactly the same rooms and are duplicates downstream even when their exits differ. "
     "Shift the population between use types and storeys: a night state fills the dwellings and empties "
@@ -248,10 +257,10 @@ SYSTEM_PROMPT = (
     "  * DAY — residents are out at work, school or elsewhere, so residential space is THINNED (a "
     "'dwelling' or 'bedroom' multiplier well below 1.0), while commercial and communal_amenity space "
     "runs at or near full. In a wholly or mostly residential building this makes the daytime "
-    "occupants_total the LOWER of the two.\n"
-    "Never give a mostly-residential building a night occupants_total below its day occupants_total — "
-    "that is backwards. If you write both states, give the multipliers that produce each and say in "
-    "the assumptions which population you have taken out of the building.\n\n"
+    "population the SMALLER of the two.\n"
+    "Never give a mostly-residential building night multipliers that leave fewer people inside than "
+    "its day multipliers — that is backwards. If you write both states, give the multipliers that "
+    "produce each and say in the assumptions which population you have taken out of the building.\n\n"
     "FIRE-RELATED CONDITIONS — one block per scenario, and they must match the scenario.\n"
     "The IFC carries the geometry and the facts below carry the people; nothing carries the fire, so "
     "you supply it. For each scenario give fire_conditions:\n"
@@ -294,7 +303,7 @@ SYSTEM_PROMPT = (
     "around 1.2 m/s and should stay inside 0.5-2.0 m/s; shoulder widths sit around 0.45-0.5 m. The "
     "`fraction` values MUST sum to exactly 1.0.\n"
     "  * occupancy_multipliers — REQUIRED on every scenario, never empty: the per-use_type multipliers "
-    "that produce this scenario's occupants_total from the computed load (e.g. a night state sets "
+    "that thin the computed load into this scenario's population (e.g. a night state sets "
     "'commercial' to 0.0 and keeps 'dwelling' at 1.0; a day state does the reverse, thinning "
     "'dwelling' and 'bedroom' well below 1.0 while holding 'commercial' at 1.0). These are applied "
     "per room downstream, so they are how your reduced total actually gets placed in the building — "
@@ -564,7 +573,7 @@ def model_block(summary):
     }
 
 
-def assemble_scenario(sc, number, names):
+def assemble_scenario(sc, number, names, spaces):
     # occupancy_state and occupants_total live in the occupancy block alone — attach_occupancy() reads
     # them from here and returns them in the full block, so they are stated once per scenario.
     return {
@@ -592,7 +601,8 @@ def assemble_scenario(sc, number, names):
         "fire_conditions": name_exit_ids(sc.fire_conditions.model_dump(), names),
         "simulation": sc.simulation.model_dump(),
         "occupancy": {
-            "occupants_total": sc.conditions.occupants_total,
+            # computed, not chosen: the same sum occupant_placement uses to seat people
+            "occupants_total": room_capacity(spaces, sc),
             "occupancy_state": sc.conditions.occupancy_state,
         },
         "regulatory_justification": name_exit_ids(sc.regulatory_justification, names),
@@ -602,13 +612,38 @@ def assemble_scenario(sc, number, names):
 
 GENERATION_ATTEMPTS = int(os.getenv("EVAC_GEN_ATTEMPTS", "3"))
 # four scenarios come back at roughly 12k tokens, and a repair attempt re-emits the whole structure,
-# so the old 16384 ceiling left little headroom. Only what the model writes is billed, so the higher
+# so the old 16384 ceiling left little headroom. Claude Sonnet 5 thinks by default and max_tokens caps
+# thinking AND response text together, so the reasoning now eats into the same budget the structure
+# needs — 24000 was sized before that was true. Only what the model writes is billed, so the higher
 # ceiling costs nothing on a normal run — it just stops a long reply being cut off part-way.
-GENERATION_MAX_TOKENS = int(os.getenv("EVAC_GEN_MAX_TOKENS", "24000"))
+# 64000 is half of Sonnet 5's 128k output ceiling; raise EVAC_GEN_MAX_TOKENS further if needed.
+GENERATION_MAX_TOKENS = int(os.getenv("EVAC_GEN_MAX_TOKENS", "64000"))
+
+
+# Anthropic reports stop_reason, Mistral reports finish_reason, and they spell a cut-off differently
+TRUNCATED = {"max_tokens", "length", "model_length"}
 
 
 class NoStructuredReply(RuntimeError):
     """The model answered without the structured result the schema call requires."""
+
+
+def reply_diagnosis(raw):
+    """What the provider actually said about the reply, rather than a guess about why it failed."""
+    metadata = getattr(raw, "response_metadata", None) or {}
+    stop = metadata.get("stop_reason") or metadata.get("finish_reason")
+    written = (getattr(raw, "usage_metadata", None) or {}).get("output_tokens")
+
+    if stop in TRUNCATED:
+        wrote = f"after writing {written} tokens " if written else ""
+        return (f"The reply was cut off {wrote}against the {GENERATION_MAX_TOKENS}-token ceiling "
+                f"({stop}), so the structure never finished. Raise EVAC_GEN_MAX_TOKENS.")
+
+    text = " ".join(str(getattr(raw, "content", "") or "").split())
+    if text:
+        return (f"The reply finished normally ({stop}) but carried prose instead of the structure. "
+                f"It began: \"{text[:200]}\"")
+    return f"The reply carried no structured result and no text ({stop})."
 
 
 def multiplier_signature(sc):
@@ -629,40 +664,72 @@ def room_capacity(spaces, sc):
     return int(seats)
 
 
-def occupancy_findings(analysis, spaces, ceiling):
-    """Faults the schema cannot see, because every field is individually in range and the
-    contradiction is between them: a total this scenario's own multipliers cannot seat, a total at
-    the computed ceiling, and two scenarios that seed occupants into the same rooms in the same
-    proportions. Unreported they reach the study as validation findings the reader has to reconcile
-    by hand; handed back to the model, they are repaired before anyone sees them."""
-    findings = []
+def direction_findings(analysis, spaces):
+    """Which way the population moves between night and day. In a building where people sleep on
+    site, night is the busy state — residents are home and asleep at night and out during the day —
+    so a set whose night multipliers seat fewer people than its day multipliers has it backwards.
+
+    No single scenario reveals it: each one's multipliers are individually legal, and the totals only
+    exist once those multipliers meet the rooms. So it is caught here, where the reply can still be
+    repaired, rather than only reported by validation.occupancy_state_issues on the finished object.
+
+    The trigger is a material sleeping population, not a residential majority — an office really is
+    busier by day, and the check must leave it alone."""
+    share = sleeping_share({"spaces": spaces})
+    if share < SLEEPING_SHARE_THRESHOLD:
+        return []
+
+    by_state = defaultdict(list)
+    for number, sc in enumerate(analysis.scenarios, start=1):
+        state = state_of_text(sc.conditions.occupancy_state)
+        if state:
+            by_state[state].append((f"scenario {number} ({sc.type})", room_capacity(spaces, sc)))
+    if not by_state["night"] or not by_state["day"]:
+        return []
+
+    # the fullest scenario of each state carries the comparison — a quiet night variant sitting
+    # beside a full one is a variant, not an inversion
+    night_label, night_total = max(by_state["night"], key=lambda r: r[1])
+    day_label, day_total = max(by_state["day"], key=lambda r: r[1])
+    if night_total >= day_total:
+        return []
+    return [f"{night_label} is a night state and its multipliers seat {night_total} occupant(s), but "
+            f"{day_label} is a daytime state and seats {day_total} — inverted for a building where "
+            f"{share:.0%} of the computed occupant load sleeps on site. Residents are home and asleep "
+            f"at night and out during the day, so the night state must hold at least as many people "
+            f"as the day state. Raise the night scenario's residential multipliers (dwelling, "
+            f"bedroom, living, kitchen, kitchen_living, dining) towards 1.0 and thin the daytime "
+            f"one's well below it. Do not fix this by renaming the states — the populations are what "
+            f"is wrong, not the labels."]
+
+
+def occupancy_findings(analysis, spaces):
+    """The faults the schema cannot see, because they are between scenarios rather than inside one.
+
+    A total the multipliers cannot seat, and a total at the computed ceiling, were consequences of
+    the model naming its own occupants_total; that number is now derived from the multipliers, so
+    neither can arise and neither costs a repair attempt.
+
+    Three faults survive that. Scenarios sharing a multiplier set seed occupants into the same rooms
+    in the same proportions and are the same simulation run twice. Distinct multiplier sets can
+    still land on the same total — thinning one use type while filling another cancels out — so the
+    derived totals have to be compared too, not assumed distinct because the multipliers differ. And
+    the set can populate its night state more thinly than its day state, which for a building people
+    sleep in is the wrong way round; see direction_findings()."""
+    findings = direction_findings(analysis, spaces)
     by_total, by_signature = defaultdict(list), defaultdict(list)
 
     for number, sc in enumerate(analysis.scenarios, start=1):
         label = f"scenario {number} ({sc.type})"
-        total = sc.conditions.occupants_total
-        seats = room_capacity(spaces, sc)
-
-        if total > seats:
-            findings.append(
-                f"{label}: occupants_total is {total} but its own occupancy_multipliers leave rooms "
-                f"holding only {seats} — {total - seats} occupant(s) could not be placed without "
-                f"pushing rooms past their computed load, so the study would run short of people. "
-                f"Either lower occupants_total to {seats}, or raise the multipliers (never above "
-                f"1.0) until the rooms hold {total}.")
-        if ceiling and total >= ceiling:
-            findings.append(
-                f"{label}: occupants_total {total} is the building's whole computed load "
-                f"({ceiling}) — that is a capacity ceiling, not an occupancy state. Choose a total "
-                f"below it.")
-
-        by_total[total].append(label)
+        by_total[room_capacity(spaces, sc)].append(label)
         by_signature[multiplier_signature(sc)].append(label)
 
     for total, labels in sorted(by_total.items()):
         if len(labels) > 1:
-            findings.append(f"{' and '.join(labels)} all evacuate {total} occupant(s) — give each "
-                            f"scenario a meaningfully different occupants_total.")
+            findings.append(
+                f"{' and '.join(labels)} each work out to {total} occupant(s) — their multipliers "
+                f"differ but cancel to the same population. Thin one use type further, or fill "
+                f"another, so the totals are meaningfully apart.")
 
     for signature, labels in by_signature.items():
         if len(labels) > 1:
@@ -690,10 +757,12 @@ def repair_prompt(prompt, failure):
                 f"Every field was in range, but the scenario set failed the occupancy checks the "
                 f"study applies downstream:\n{listed}\n\n"
                 f"Return the whole BuildingAnalysis again with those scenarios corrected. The "
-                f"occupancy_multipliers are what actually seat the occupants room by room, so they "
-                f"and occupants_total have to agree — a total its own multipliers cannot hold is a "
-                f"simulation that silently runs short of people. Leave the scenarios that were not "
-                f"named as they are.")
+                f"occupancy_multipliers are what actually seat the occupants room by room: they "
+                f"decide how many people each scenario evacuates and which rooms those people start "
+                f"in. Two scenarios sharing a set put the same people in the same rooms and are the "
+                f"same simulation run twice; a night state seating fewer people than a daytime one "
+                f"has a sleeping building's population moving the wrong way. Fix the multipliers on "
+                f"the scenarios named above and leave the others as they are.")
     return (f"{prompt}\n\n=== YOUR PREVIOUS REPLY WAS REJECTED ===\n"
             f"It carried no structured result at all — the reply either ran past the "
             f"{GENERATION_MAX_TOKENS}-token ceiling part-way through or answered in prose.\n\n"
@@ -706,34 +775,34 @@ def invoke_structured(llm, prompt, attempts=None, review=None):
     the way a schema error is, but they never sink the run: a flawed scenario set is still a usable
     one, and validation reports every finding downstream, so the closest reply is kept rather than an
     expensive call thrown away."""
-    structured = llm.with_structured_output(BuildingAnalysis)
+    structured = structured_output(llm, BuildingAnalysis)
     attempts = max(1, attempts if attempts is not None else GENERATION_ATTEMPTS)
     last_failure = None
     closest = None
     for attempt in range(attempts):
         ask = prompt if last_failure is None else repair_prompt(prompt, last_failure)
-        try:
-            analysis = structured.invoke(ask)
-        except ValidationError as exc:
-            last_failure = exc
+        # include_raw keeps a failed parse as data rather than an exception, so the reason a reply
+        # was unusable comes off the provider's own metadata instead of being assumed
+        result = structured.invoke(ask)
+        analysis = result.get("parsed")
+        error = result.get("parsing_error")
+
+        if isinstance(error, ValidationError):
+            last_failure = error
             reason = "rejected by the schema"
-        else:
-            # a reply with no tool call parses to None rather than raising, so it has to be
+        elif analysis is None:
+            # a reply carrying no structure parses to None rather than raising, so it has to be
             # caught here — left alone it reaches the caller as an attribute error on None
-            if analysis is None:
-                last_failure = NoStructuredReply(
-                    f"the model returned no structured result in {attempts} attempt(s) — the reply "
-                    f"most likely ran past the {GENERATION_MAX_TOKENS}-token ceiling part-way "
-                    f"through the structure. Raise EVAC_GEN_MAX_TOKENS and run it again.")
-                reason = "no structured result returned"
-            else:
-                findings = review(analysis) if review is not None else []
-                if not findings:
-                    return analysis
-                if closest is None or len(findings) < len(closest[1]):
-                    closest = (analysis, findings)
-                last_failure = findings
-                reason = f"{len(findings)} occupancy finding(s)"
+            last_failure = NoStructuredReply(reply_diagnosis(result.get("raw")))
+            reason = "no structured result returned"
+        else:
+            findings = review(analysis) if review is not None else []
+            if not findings:
+                return analysis
+            if closest is None or len(findings) < len(closest[1]):
+                closest = (analysis, findings)
+            last_failure = findings
+            reason = f"{len(findings)} occupancy finding(s)"
         print(f"[scenario generation] attempt {attempt + 1}/{attempts} {reason}; "
               f"{'retrying with the reason fed back' if attempt + 1 < attempts else 'giving up'}",
               file=sys.stderr)
@@ -764,10 +833,9 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
     facts = facts_block(building, grounded, exits, stairs, storeys, regulation_refs, degraded, names)
     prompt = f"{SYSTEM_PROMPT}\n\n=== COMPUTED BUILDING FACTS (reason only over these) ===\n{facts}\n\n=== TASK ===\n{TASK}"
 
-    ceiling = building["total_occupant_load"]
     analysis = invoke_structured(
         llm, prompt,
-        review=lambda reply: occupancy_findings(reply, grounded["spaces"], ceiling))
+        review=lambda reply: occupancy_findings(reply, grounded["spaces"]))
 
     obj = {
         "schema_version": "1.0",
@@ -790,7 +858,7 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
         "elevators": elevators_block(summary),
         "spaces": spaces_block(grounded, classified, names),
         "degraded_cases": degraded,
-        "scenarios": [assemble_scenario(sc, n, names)
+        "scenarios": [assemble_scenario(sc, n, names, grounded["spaces"])
                       for n, sc in enumerate(analysis.scenarios, start=1)],
         "regulation_check": gate,
         "validation": {},

@@ -13,6 +13,11 @@ from core_backend.scenario_generation_llm_1 import (ScenarioContent, assemble_sc
                                                   facts_block, spaces_block)
 
 
+# the rooms the occupant total is computed against — 4 between them, at full load
+SAMPLE_SPACES = [{"guid": "a", "use_type": "dwelling", "occupant_load": 3},
+                 {"guid": "b", "use_type": "dwelling", "occupant_load": 1}]
+
+
 def sample_exits():
     """Deliberately stored east-to-west, so file order and plan order disagree."""
     return [
@@ -129,8 +134,9 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
         type="one_exit_discounted", title="Exit 3 unavailable",
         purpose="shows what the loss of Exit 3 costs the Ground storey",
         conditions={"exits_available": ["Exit 1", "Exit 2"], "exits_discounted": ["Exit 3"],
-                    "occupancy_state": "night", "occupants_total": 4},
-        assumptions=["Exit 3 is assumed blocked"], occupant_distribution=["Ground: 4"],
+                    "occupancy_state": "night"},
+        assumptions=["Exit 3 is assumed blocked"],
+        occupant_distribution=["Ground: dwellings fully occupied"],
         routes=[{"from_area": "Ground", "via": "corridor", "to_exit": "Exit 1", "note": "12.0 m"}],
         restricted_areas=[{"area": "Exit 3 lobby", "reason": "smoke-logged"}],
         bottlenecks=["Exit 1 is the narrowest at 1.02 m"], risks=["longer travel"],
@@ -157,7 +163,7 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
                          "basis": "origin chosen to close Exit 3"},
         regulatory_justification="ENG-R11", ai_explanation="tests the loss of Exit 3")
 
-    scn = assemble_scenario(content, 1, names)
+    scn = assemble_scenario(content, 1, names, SAMPLE_SPACES)
 
     conditions = scn["scenario_objective"]["conditions"]
     assert conditions["exits_discounted"] == ["Exit 3"]
@@ -172,13 +178,14 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
 
 
 def test_the_population_is_seeded_into_the_occupancy_block_not_the_conditions():
-    """occupants_total and occupancy_state are stated once. attach_occupancy() picks them up from
-    there, so the conditions never carry a second copy to drift from."""
+    """occupancy_state and the computed occupants_total are stated once. attach_occupancy() picks
+    them up from there, so the conditions never carry a second copy to drift from. The model states
+    no total at all — it comes from the multipliers against the rooms."""
     names = exit_names(sample_exits())
     content = ScenarioContent(
         type="night", title="Night", purpose="p",
         conditions={"exits_available": ["Exit 1"], "exits_discounted": [],
-                    "occupancy_state": "night", "occupants_total": 4},
+                    "occupancy_state": "night"},
         assumptions=[], occupant_distribution=[], routes=[], restricted_areas=[],
         bottlenecks=[], risks=[], narrative="n",
         simulation={"movement_model": "steering",
@@ -198,7 +205,8 @@ def test_the_population_is_seeded_into_the_occupancy_block_not_the_conditions():
                          "smoke_conditions": "s", "basis": "b"},
         regulatory_justification="ENG-R11", ai_explanation="x")
 
-    scn = assemble_scenario(content, 1, names)
+    # no multipliers, so every room sits at its computed load and the total is their sum
+    scn = assemble_scenario(content, 1, names, SAMPLE_SPACES)
 
     assert scn["occupancy"] == {"occupants_total": 4, "occupancy_state": "night"}
     assert set(scn["scenario_objective"]["conditions"]) == {"exits_discounted",

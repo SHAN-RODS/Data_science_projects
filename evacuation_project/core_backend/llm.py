@@ -8,7 +8,10 @@ from langchain_mistralai import ChatMistralAI
 
 load_dotenv()
 
-NO_SAMPLING_PARAMETER= ("opus-4-8", "opus-4-7", "sonnet-5", "fable-5", "mythos-5")
+# Anthropic removed temperature/top_p/top_k on these models — sending one is a 400, not a warning.
+# "opus-5" must stay ahead of nothing in particular but must BE here: it is the model this project
+# runs, and the omission only shows up if ANTHROPIC_TEMPERATURE is ever set.
+NO_SAMPLING_PARAMETER= ("opus-5", "opus-4-8", "opus-4-7", "sonnet-5", "fable-5", "mythos-5")
 
 def accepts_temperature(model_name):
     name = (model_name or "").lower()
@@ -76,8 +79,9 @@ def structured_output(llm, schema, include_raw=True):
     langchain_mistralai binds tool calling as ``tool_choice="any"`` — it cannot force a named tool
     (its own TODO says so) — so a reply that skips the tool parses to None and the whole run is
     lost. Its json_schema method puts the schema in ``response_format`` where the API enforces it.
-    Anthropic forces the tool by name already, so its default path is left alone.
+
+    Anthropic's json_schema method uses Claude's own structured outputs, where the schema is
+    enforced server-side rather than by convention. Claude also forces the tool by name, so either
+    path holds; this one cannot come back shaped wrong at all.
     """
-    if isinstance(llm, ChatMistralAI):
-        return llm.with_structured_output(schema, method="json_schema", include_raw=include_raw)
-    return llm.with_structured_output(schema, include_raw=include_raw)
+    return llm.with_structured_output(schema, method="json_schema", include_raw=include_raw)

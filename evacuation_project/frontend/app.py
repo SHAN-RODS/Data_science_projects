@@ -97,10 +97,6 @@ with st.sidebar:
             st.rerun()
 
 
-# ---- presentation helpers ---------------------------------------------------------------------
-# The page shows one long object. These keep every block to the same rhythm — a heading, a line of
-# plain-English context, then the content — so a reader can skim it rather than hunt through it.
-
 def section(title, caption=None):
     st.subheader(title)
     if caption:
@@ -108,7 +104,6 @@ def section(title, caption=None):
 
 
 def field(label, value):
-    """A labelled prose value. Long text overflows a metric tile, so it gets its own line."""
     st.markdown(f"**{label}**  \n{value if value not in (None, '') else '—'}")
 
 
@@ -181,10 +176,6 @@ scenarios = obj.get("scenarios", [])
 not_assessed = obj.get("not_assessed", [])
 
 
-# ================================================================================================
-# Step 2 — the building the scenarios are written about
-# ================================================================================================
-
 section(f"Step 2 — Building: {building.get('project')}",
         "Everything below is computed from the IFC geometry, not chosen by the AI.")
 
@@ -195,7 +186,7 @@ m3.metric("Final exits", len(obj.get("exits", [])))
 m4.metric("Spaces", len(obj.get("spaces", [])))
 
 with st.container(border=True):
-    st.markdown("**Quality checks**")
+    st.markdown("**Building checks**")
     st.caption("Run over the generated object before it is exported — nothing here is the AI marking "
                "its own homework.")
 
@@ -254,10 +245,6 @@ with ref_gaps:
 st.divider()
 
 
-# ================================================================================================
-# Step 3 — the scenarios
-# ================================================================================================
-
 section("Step 3 — Evacuation scenarios",
         f"{len(scenarios)} scenarios generated for this building. Select one to inspect it.")
 
@@ -276,7 +263,6 @@ discounted = [str(named(e, exit_labels)) for e in conditions.get("exits_discount
 available = [str(named(e, exit_labels)) for e in routes_block.get("exits_available", [])]
 estimate = evacuation_time(scn)
 
-# --- headline card: what this scenario is, in one glance ---
 with st.container(border=True):
     st.markdown(f"### {scn.get('title')}")
     if occupancy.get("occupancy_state"):
@@ -298,7 +284,6 @@ with st.container(border=True):
 tab_story, tab_people, tab_exits, tab_fire, tab_timing = st.tabs(
     ["Overview", "People", "Exits & risks", "Fire", "Movement & timing"])
 
-# --- Overview: the plain-English account and why this scenario exists ---
 with tab_story:
     st.markdown("**Narrative**")
     st.info(scn.get("narrative", ""))
@@ -308,7 +293,6 @@ with tab_story:
     with o2:
         field("Regulatory justification", scn.get("regulatory_justification"))
 
-# --- People: who is in the building and what was assumed about them ---
 with tab_people:
     p1, p2 = st.columns(2)
     with p1:
@@ -325,7 +309,6 @@ with tab_people:
     if occupancy.get("unallocated_why"):
         st.warning(occupancy["unallocated_why"])
 
-# --- Exits & risks: where people may go, and what makes it hard ---
 with tab_exits:
     e1, e2 = st.columns(2)
     with e1:
@@ -345,7 +328,6 @@ with tab_exits:
     with r2:
         bullets("Risks", scn.get("risks", []))
 
-# --- Fire: the one part neither the IFC nor the computed facts can supply ---
 with tab_fire:
     st.caption("What the IFC cannot carry: what burns, where, what it takes out, and when people "
                "find out.")
@@ -368,7 +350,6 @@ with tab_fire:
     else:
         st.caption("No fire-related conditions were generated for this scenario.")
 
-# --- Movement & timing: how long before people move, and how fast once they do ---
 with tab_timing:
     st.markdown("**Pre-movement time**")
     st.caption("Everything between the fire starting and people starting to move: the fire is "
@@ -414,17 +395,12 @@ with tab_timing:
 st.divider()
 
 
-# ================================================================================================
-# Step 4 — the deliverable
-# ================================================================================================
-
-section("Step 4 — Export",
-        "One JSON record per scenario, carrying every input an egress study needs.")
+section("Step 4 — Export")
 
 records = build_records(obj)
 records_json = export_records(obj)
 
-st.download_button(f"Download JSON — {len(records)} scenario record(s)", data=records_json,
+st.download_button(f"Download JSON", data=records_json,
                    file_name="evacuation_scenario_records.json", mime="application/json",
                    type="primary", width='stretch')
 

@@ -138,8 +138,13 @@ def scenario_text(scn, id_tokens):
 
 def number_factcheck(obj):
     allowed = allowed_floats(obj)
+    # identifiers, not quantities. Stairs are named from the facts by their IFC name — "Assembled
+    # Stair:Stair:1429846" — so a route that cites one reads as a fabricated number unless the whole
+    # token is stripped first, the same way exit ids and space guids already are.
     id_tokens = ({e.get("id") for e in obj["exits"]} | {s.get("guid") for s in obj["spaces"]}
-                 | set(exit_names(obj["exits"]).values()))
+                 | set(exit_names(obj["exits"]).values())
+                 | {c.get("id") for c in obj.get("circulation", [])}
+                 | {c.get("name") for c in obj.get("circulation", [])})
     ungrounded = []
     for scn in obj["scenarios"]:
         for token in NUM_RE.findall(scenario_text(scn, id_tokens)):
@@ -272,13 +277,20 @@ def sleeping_share(obj):
     return (sleeping / total) if total else 0.0
 
 
-def state_of(scenario):
-    state = str((scenario.get("occupancy") or {}).get("occupancy_state") or "").lower()
-    if any(w in state for w in NIGHT_WORDS):
+def state_of_text(state):
+    """Which of the two states a free-text occupancy_state names, if either. Split out from
+    state_of() so scenario generation can read the state off its own reply — where the occupancy
+    block does not exist yet — against the same vocabulary this module judges the finished object by."""
+    text = str(state or "").lower()
+    if any(w in text for w in NIGHT_WORDS):
         return "night"
-    if any(w in state for w in DAY_WORDS):
+    if any(w in text for w in DAY_WORDS):
         return "day"
     return None
+
+
+def state_of(scenario):
+    return state_of_text((scenario.get("occupancy") or {}).get("occupancy_state"))
 
 
 def occupancy_state_issues(obj):
