@@ -1,44 +1,41 @@
-"""The occupant total is computed from the scenario's multipliers, not named by the model.
+"""The scenario's population comes from its occupancy state, not from numbers the model invents.
 
-The model used to state occupants_total itself, and a review loop caught the contradictions that
-followed: a total its own multipliers could not seat, a total at the computed ceiling, two scenarios
-evacuating the same number. Those repairs cost a full regeneration each and routinely ran out the
-attempt budget, because the model was being asked for a sum the code already computes -- once the
-multipliers are chosen, the total is determined.
+The model used to return a multiplier per use type per scenario, and a review loop caught what
+followed: a total its own multipliers could not seat, two scenarios cancelling to the same
+population, and — the one that fired on most runs — a night state holding fewer residents than a
+daytime one. Each repair cost a full regeneration of every scenario, and the direction fault often
+survived all three attempts, because the model was picking numbers whose effect it was never shown.
 
-Deriving it makes all three faults unreachable rather than repaired. What is left for review is the
-modelling choices the arithmetic cannot settle. Two scenarios sharing a multiplier set seed
-occupants into the same rooms in the same proportions and are the same simulation run twice. And in
-a building people sleep in, a night state seating fewer occupants than a daytime one has the
-population moving the wrong way -- residents are home and asleep at night and out during the day.
+The multipliers are a table now (occupancy_states.py) and the model picks a state key from an enum.
+The first two faults are unreachable because the total IS the seat count; the third is unreachable
+because the table's night state sits at the schema maximum for residential space. What is left to
+review is the one thing the model can still get wrong: pairing the same state with the same
+discounted exits, which describes one simulation twice.
 
-The last tests pin the deliberate asymmetry with the schema retry: a finding is a flaw in the set,
+The last tests pin the deliberate asymmetry with the schema retry — a finding is a flaw in the set,
 not an unusable reply, so an unrepaired one keeps the closest set rather than losing an expensive
 call.
 """
 
-from core_backend.scenario_generation_llm_1 import (BuildingAnalysis, assemble_scenario,
-                                                    direction_findings, invoke_structured,
-                                                    occupancy_findings, room_capacity)
+from core_backend.occupancy_states import multipliers_for, occupants_under
 from core_backend.occupant_placement import scenario_weights
+from core_backend.scenario_generation_llm_1 import (BuildingAnalysis, assemble_scenario,
+                                                    invoke_structured, occupancy_findings,
+                                                    room_capacity, scenario_signature)
 from core_backend.tests.test_generation_retry import sample_scenario, structured_reply
 
-# Two dwellings holding 74 between them; the multipliers below thin that to the capacity each test
-# needs, and 74 is the whole computed load.
+# Two dwellings holding 74 between them, plus an amenity — the mix that makes the states differ in
+# where the people are and not only in how many.
 SPACES = [{"guid": "a", "use_type": "dwelling", "occupant_load": 40},
-          {"guid": "b", "use_type": "dwelling", "occupant_load": 34}]
+          {"guid": "b", "use_type": "dwelling", "occupant_load": 34},
+          {"guid": "c", "use_type": "communal_amenity", "occupant_load": 20}]
+
+DWELLINGS = [s for s in SPACES if s["use_type"] == "dwelling"]
 
 
-def scenario(multipliers, type_name="base_case"):
-    """A schema-valid scenario carrying a given multiplier set. It states no total -- there is no
-    field for one, which is the point. ``type_name`` doubles as the occupancy_state, so a scenario
-    called 'night' here reads as one to the direction check too."""
-    sc = sample_scenario(1.0)
+def scenario(state, discounted=(), type_name="base_case"):
+    sc = sample_scenario(state=state, discounted=discounted)
     sc["type"] = type_name
-    sc["conditions"]["occupancy_state"] = type_name
-    sc["simulation"]["occupancy_multipliers"] = [
-        {"use_type": use_type, "multiplier": m, "reason": "r"}
-        for use_type, m in multipliers.items()]
     return sc
 
 
@@ -70,175 +67,143 @@ class FakeLLM:
         return Structured()
 
 
-# ---- the total is derived, not stated --------------------------------------------------------
+# ---- the total follows from the state --------------------------------------------------------
 
-def test_the_total_is_the_computed_load_thinned_by_the_multipliers():
-    analysis = BuildingAnalysis(scenarios=[scenario({"dwelling": 0.5})])
+def test_the_total_is_the_computed_load_thinned_by_the_state():
+    night = BuildingAnalysis(scenarios=[scenario("night_sleeping")])
 
-    assert total_of(analysis.scenarios[0]) == 37        # (40 + 34) * 0.5
+    assert total_of(night.scenarios[0]) == 74          # dwellings full, amenity closed
 
 
-def test_a_use_type_without_a_multiplier_stays_at_its_computed_load():
-    """The default is 1.0, not 0 -- an unmentioned use type is untouched, not emptied."""
-    analysis = BuildingAnalysis(scenarios=[scenario({"commercial": 0.0})])
+def test_a_different_state_reaches_a_different_population():
+    day = BuildingAnalysis(scenarios=[scenario("working_day")])
 
-    assert total_of(analysis.scenarios[0]) == 74
+    assert total_of(day.scenarios[0]) == int(74 * 0.3) + int(20 * 0.5)
 
 
 def test_the_total_is_the_capacity_occupant_placement_seats_into():
     """The derived total is only right if it is what the placement downstream actually seats. Both
-    read the same field off the same rooms, and this pins them together."""
-    assembled = assemble_scenario(BuildingAnalysis(
-        scenarios=[scenario({"dwelling": 0.6})]).scenarios[0], 1, {}, SPACES)
+    read the same multipliers off the same rooms, and this pins them together."""
+    assembled = assemble_scenario(
+        BuildingAnalysis(scenarios=[scenario("weekend_daytime")]).scenarios[0], 1, {}, SPACES)
 
     downstream = int(sum(scenario_weights({"spaces": SPACES}, assembled).values()))
 
-    assert assembled["occupancy"]["occupants_total"] == downstream == 44
+    assert assembled["occupancy"]["occupants_total"] == downstream
 
 
-def test_a_total_its_own_multipliers_cannot_seat_is_now_unreachable():
+def test_a_total_the_state_cannot_seat_is_unreachable():
     """The fault that used to drive most repairs. The total is the seat count, so the shortfall it
-    described cannot arise -- and costs no attempt."""
-    for multipliers in ({"dwelling": 0.5}, {"dwelling": 0.0}, {"dwelling": 1.0}):
-        sc = BuildingAnalysis(scenarios=[scenario(multipliers)]).scenarios[0]
+    described cannot arise, and it costs no attempt."""
+    for state in ("night_sleeping", "working_day", "evening_communal"):
+        sc = BuildingAnalysis(scenarios=[scenario(state)]).scenarios[0]
         assert total_of(sc) == room_capacity(SPACES, sc)
-        assert occupancy_findings(BuildingAnalysis(scenarios=[scenario(multipliers)]),
-                                  SPACES) == []
 
 
-def test_different_multipliers_give_different_totals():
-    night = BuildingAnalysis(scenarios=[scenario({"dwelling": 1.0}, "night")]).scenarios[0]
-    day = BuildingAnalysis(scenarios=[scenario({"dwelling": 0.4}, "day")]).scenarios[0]
+def test_the_object_carries_the_multipliers_the_state_defines():
+    """The model no longer returns them, but the object still stores them where placement,
+    validation and the export already look — supplied by the table instead."""
+    assembled = assemble_scenario(
+        BuildingAnalysis(scenarios=[scenario("night_sleeping")]).scenarios[0], 1, {}, SPACES)
 
-    assert total_of(night) == 74
-    assert total_of(day) == 29
-    assert occupancy_findings(BuildingAnalysis(scenarios=[night, day]), SPACES) == []
+    stored = assembled["simulation"]["occupancy_multipliers"]
 
-
-def test_multipliers_that_differ_but_cancel_to_the_same_total_are_still_caught():
-    """Deriving the total does NOT make duplicate populations impossible — thinning one use type
-    while filling another lands on the same sum from a different multiplier set. Seen in a real run:
-    two scenarios with distinct signatures both evacuating 111."""
-    mixed = [{"guid": "a", "use_type": "dwelling", "occupant_load": 40},
-             {"guid": "b", "use_type": "commercial", "occupant_load": 40}]
-    day = scenario({"dwelling": 0.5, "commercial": 1.0}, "day")        # 20 + 40 = 60
-    evening = scenario({"dwelling": 1.0, "commercial": 0.5}, "evening")  # 40 + 20 = 60
-
-    findings = occupancy_findings(BuildingAnalysis(scenarios=[day, evening]), mixed)
-
-    assert len(findings) == 1
-    assert "each work out to 60 occupant(s)" in findings[0]
-    assert "cancel to the same population" in findings[0]
+    assert {m["use_type"] for m in stored} == {"dwelling", "communal_amenity"}
+    assert {m["use_type"]: m["multiplier"] for m in stored} == \
+           {m["use_type"]: m["multiplier"]
+            for m in multipliers_for("night_sleeping", {"dwelling", "communal_amenity"})}
 
 
-# ---- which way the population moves between night and day ------------------------------------
+def test_the_multipliers_only_cover_use_types_the_building_has():
+    """A row for a room type nobody has is noise in the deliverable and reads as though the
+    building had one."""
+    assembled = assemble_scenario(
+        BuildingAnalysis(scenarios=[scenario("working_day")]).scenarios[0], 1, {}, SPACES)
 
-def test_a_night_thinner_than_its_day_is_repaired():
-    """Seen in the generated output: the model thinned the dwellings at night and filled them by day,
-    so the residential building evacuated fewer people asleep than awake."""
-    inverted = [scenario({"dwelling": 0.3}, "night"), scenario({"dwelling": 1.0}, "day")]
-    corrected = [scenario({"dwelling": 1.0}, "night"), scenario({"dwelling": 0.3}, "day")]
-    llm = FakeLLM([inverted, corrected])
+    assert all(m["use_type"] in {"dwelling", "communal_amenity"}
+               for m in assembled["simulation"]["occupancy_multipliers"])
 
-    analysis = invoke_structured(llm, "PROMPT", review=review)
 
-    assert len(llm.prompts) == 2
-    assert "inverted" in llm.prompts[1]
-    assert "leave 22 occupant(s) in sleeping space" in llm.prompts[1]   # night: (40 + 34) * 0.3
-    assert "leaves 74" in llm.prompts[1]                                # day at the full load
-    assert [total_of(sc) for sc in analysis.scenarios] == [74, 22]
+def test_the_state_label_travels_with_the_scenario():
+    assembled = assemble_scenario(
+        BuildingAnalysis(scenarios=[scenario("night_sleeping")]).scenarios[0], 1, {}, SPACES)
+
+    assert assembled["occupancy"]["occupancy_state"] == "night_sleeping"
+    assert "asleep" in assembled["occupancy"]["occupancy_state_label"]
+
+
+# ---- the direction is now a property of the table, not of the reply --------------------------
+
+def test_a_night_state_can_no_longer_be_thinner_than_a_daytime_one():
+    """The fault the review loop existed for. There is no reply that produces it: the model chooses
+    a state key, and every daytime state in the table sits at or below the night one for
+    residential space."""
+    for day_state in ("working_day", "weekend_daytime"):
+        assert occupants_under(DWELLINGS, "night_sleeping") >= \
+               occupants_under(DWELLINGS, day_state)
 
 
 def test_an_amenity_heavy_building_is_not_flagged_for_emptying_it_at_night():
-    """The real building this invariant was rewritten for. communal_amenity carries most of the
-    computed load, so a night state that empties it — which its own state text says, and which is
-    correct — lands far below the day TOTAL however full the dwellings are. Comparing totals made
-    that unsatisfiable and spent every repair attempt on it. Residential occupancy is 27 at night
-    against 10 by day, so the set is right and the check must stay silent."""
-    mixed = [{"guid": "a", "use_type": "dwelling", "occupant_load": 27},
-             {"guid": "b", "use_type": "communal_amenity", "occupant_load": 48}]
-    night = scenario({"dwelling": 1.0, "communal_amenity": 0.0}, "night")
-    day = scenario({"dwelling": 0.4, "communal_amenity": 1.0}, "day")
-    built = BuildingAnalysis(scenarios=[night, day])
+    """The real building this used to break on. communal_amenity carries a large share of the
+    computed load, so a night state that closes it — which is correct — lands below the day TOTAL
+    however full the dwellings are. Nothing flags it, because the direction is no longer judged by
+    comparing reply against reply at all."""
+    amenity_heavy = [{"guid": "a", "use_type": "dwelling", "occupant_load": 20},
+                     {"guid": "b", "use_type": "communal_amenity", "occupant_load": 60}]
+    night, day = scenario("night_sleeping"), scenario("working_day")
 
-    assert room_capacity(mixed, built.scenarios[0]) == 27      # night TOTAL, well below the day's
-    assert room_capacity(mixed, built.scenarios[1]) == 58      # day TOTAL
-    assert direction_findings(built, mixed) == []              # residential: 27 >= 10, correct
-
-
-def test_a_night_above_its_day_passes():
-    """Not every building thins by day; only the inversion is wrong."""
-    assert occupancy_findings(BuildingAnalysis(scenarios=[
-        scenario({"dwelling": 1.0}, "night"), scenario({"dwelling": 0.4}, "day")]), SPACES) == []
-
-
-def test_equal_populations_are_not_an_inversion():
-    """They are still two runs of the same simulation, which the duplicate check says on its own —
-    but the population is not moving the wrong way, so the direction check stays quiet."""
-    equal = BuildingAnalysis(scenarios=[scenario({"dwelling": 0.6}, "night"),
-                                        scenario({"dwelling": 0.6}, "daytime peak")])
-
-    assert direction_findings(equal, SPACES) == []
-    assert all("inverted" not in f for f in occupancy_findings(equal, SPACES))
-
-
-def test_a_building_nobody_sleeps_in_is_left_alone():
-    """An office is genuinely busier by day — the check must not fire on it."""
-    offices = [{"guid": "a", "use_type": "commercial", "occupant_load": 40},
-               {"guid": "b", "use_type": "commercial", "occupant_load": 34}]
-
-    assert occupancy_findings(BuildingAnalysis(scenarios=[
-        scenario({"commercial": 0.1}, "night"), scenario({"commercial": 1.0}, "day")]),
-        offices) == []
-
-
-def test_the_check_needs_both_states_to_compare():
-    assert occupancy_findings(BuildingAnalysis(scenarios=[
-        scenario({"dwelling": 0.3}, "night"), scenario({"dwelling": 1.0}, "evening")]),
-        SPACES) == []
-
-
-def test_the_fullest_scenario_of_each_state_is_the_one_compared():
-    """A quiet night variant beside a full one is a variant, not an inversion."""
-    assert occupancy_findings(BuildingAnalysis(scenarios=[
-        scenario({"dwelling": 0.3}, "night, one exit lost"),
-        scenario({"dwelling": 1.0}, "night"),
-        scenario({"dwelling": 0.4}, "day")]), SPACES) == []
-
-
-def test_the_finding_names_which_multipliers_to_move():
-    """A finding the model cannot act on costs an attempt and changes nothing, so it says which
-    use types to raise and which to thin rather than only that the set is wrong."""
-    finding = occupancy_findings(BuildingAnalysis(scenarios=[
-        scenario({"dwelling": 0.3}, "night"), scenario({"dwelling": 1.0}, "day")]), SPACES)[0]
-
-    assert "dwelling" in finding and "bedroom" in finding
-    assert "renaming the states" in finding      # relabelling leaves the same populations in place
+    assert occupants_under(amenity_heavy, "night_sleeping") == 20      # below the day's, correctly
+    assert occupants_under(amenity_heavy, "working_day") == 36
+    assert occupancy_findings(BuildingAnalysis(scenarios=[night, day]), amenity_heavy) == []
 
 
 # ---- two scenarios that are really one -------------------------------------------------------
 
-def test_two_scenarios_seeding_the_same_rooms_are_repaired():
-    duplicated = [scenario({"dwelling": 1.0}, "night"), scenario({"dwelling": 1.0}, "day")]
-    varied = [scenario({"dwelling": 1.0}, "night"), scenario({"dwelling": 0.4}, "day")]
+def test_the_same_state_closing_the_same_exits_is_repaired():
+    duplicated = [scenario("night_sleeping"), scenario("night_sleeping")]
+    varied = [scenario("night_sleeping"), scenario("working_day")]
     llm = FakeLLM([duplicated, varied])
 
     analysis = invoke_structured(llm, "PROMPT", review=review)
 
     assert len(llm.prompts) == 2
-    assert "identical occupancy_multipliers" in llm.prompts[1]
-    assert "same simulation run twice" in llm.prompts[1]
-    assert [total_of(sc) for sc in analysis.scenarios] == [74, 29]
+    assert "one simulation described twice" in llm.prompts[1]
+    assert "night_sleeping" in llm.prompts[1]
+    assert [sc.conditions.occupancy_state for sc in analysis.scenarios] == \
+           ["night_sleeping", "working_day"]
 
 
-def test_scenarios_with_no_multipliers_at_all_are_repaired():
-    """Empty sets collide the same way -- every scenario would seed every room at full load, so
-    they trip both checks at once: the same signature and, inevitably, the same total."""
-    findings = occupancy_findings(BuildingAnalysis(
-        scenarios=[scenario({}, "night"), scenario({}, "day")]), SPACES)
+def test_the_same_state_with_a_different_exit_lost_is_a_legitimate_pair():
+    """The comparison a discounted-exit study exists to make: hold the population still and take an
+    exit away, so the exit is the only variable. The old signature keyed on multipliers alone and
+    called this a duplicate, which cost a repair attempt to un-vary something worth varying."""
+    base = scenario("night_sleeping")
+    degraded = scenario("night_sleeping", discounted=("Exit 1",))
 
-    assert any("no occupancy_multipliers at all" in f for f in findings)
-    assert any("each work out to 74 occupant(s)" in f for f in findings)
+    assert scenario_signature(BuildingAnalysis(scenarios=[base]).scenarios[0]) != \
+           scenario_signature(BuildingAnalysis(scenarios=[degraded]).scenarios[0])
+    assert occupancy_findings(BuildingAnalysis(scenarios=[base, degraded]), SPACES) == []
+
+
+def test_two_different_states_are_never_duplicates():
+    """Identity is the state and the exits, not the headcount. Two states stand people in different
+    rooms even when their totals are close, so a near-collision is not something to repair — the old
+    check flagged exact collisions and sent the model chasing an arithmetic coincidence."""
+    findings = occupancy_findings(
+        BuildingAnalysis(scenarios=[scenario("early_morning"), scenario("weekend_daytime")]),
+        SPACES)
+
+    assert findings == []
+
+
+def test_a_varied_set_passes():
+    varied = BuildingAnalysis(scenarios=[
+        scenario("night_sleeping"),
+        scenario("night_sleeping", discounted=("Exit 1",)),
+        scenario("working_day"),
+        scenario("evening_communal")])
+
+    assert occupancy_findings(varied, SPACES) == []
 
 
 # ---- what happens when the model never complies ----------------------------------------------
@@ -246,7 +211,7 @@ def test_scenarios_with_no_multipliers_at_all_are_repaired():
 def test_an_unrepaired_set_is_kept_rather_than_losing_the_run():
     """The asymmetry with the schema retry: findings are reported downstream, so a flawed set is
     still worth having. Raising here would throw away a call that costs minutes."""
-    llm = FakeLLM([[scenario({"dwelling": 0.5}, "night"), scenario({"dwelling": 0.5}, "day")]])
+    llm = FakeLLM([[scenario("night_sleeping"), scenario("night_sleeping")]])
 
     analysis = invoke_structured(llm, "PROMPT", attempts=3, review=review)
 
@@ -257,10 +222,9 @@ def test_an_unrepaired_set_is_kept_rather_than_losing_the_run():
 def test_the_closest_set_is_the_one_kept():
     """A model can answer a repair by breaking something else. What comes back is the best attempt,
     not merely the last."""
-    one_fault = [scenario({"dwelling": 1.0}, "night"), scenario({"dwelling": 1.0}, "day"),
-                 scenario({"dwelling": 0.4}, "evening")]
-    two_faults = [scenario({"dwelling": 1.0}, "night"), scenario({"dwelling": 1.0}, "day"),
-                  scenario({"dwelling": 0.4}, "evening"), scenario({"dwelling": 0.4}, "peak")]
+    one_fault = [scenario("night_sleeping"), scenario("night_sleeping"), scenario("working_day")]
+    two_faults = [scenario("night_sleeping"), scenario("night_sleeping"),
+                  scenario("working_day"), scenario("working_day")]
     llm = FakeLLM([one_fault, two_faults])            # second attempt is worse
 
     analysis = invoke_structured(llm, "PROMPT", attempts=2, review=review)
@@ -270,9 +234,9 @@ def test_the_closest_set_is_the_one_kept():
 
 def test_no_review_leaves_the_old_behaviour_alone():
     """Callers that pass no review -- and every existing test -- see exactly what they saw before."""
-    llm = FakeLLM([[scenario({"dwelling": 0.5})]])
+    llm = FakeLLM([[scenario("night_sleeping")]])
 
     analysis = invoke_structured(llm, "PROMPT")
 
     assert len(llm.prompts) == 1
-    assert total_of(analysis.scenarios[0]) == 37
+    assert total_of(analysis.scenarios[0]) == 74

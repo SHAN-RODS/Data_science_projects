@@ -4,8 +4,9 @@ from collections import defaultdict
 
 from jsonschema import Draft202012Validator
 
-from core_backend.exit_names import (evacuation_routes, exit_names, scenario_conditions,
-                                     unknown_exit_references)
+from core_backend.exit_names import (discounted_exit_ids, evacuation_routes, exit_names,
+                                     scenario_conditions, unknown_exit_references)
+from core_backend.occupancy_states import (occupancy_states, period_of, residential_use_types)
 from core_backend.scenario_schema import scenario_schema
 import sys
 import json
@@ -27,9 +28,16 @@ FRACTION_TOLERANCE = 0.01
 
 # In residential space the night is the busy state: residents are home and asleep, while by day they
 # are out. A scenario set that has it the other way round is inverted, not merely conservative.
-# The trigger is a material sleeping population, not a residential majority — a block of flats with a
-# large communal amenity is still a building whose night is the demanding one.
-SLEEPING_USE_TYPES = {"dwelling", "bedroom", "living", "kitchen", "kitchen_living", "dining", "sauna"}
+#
+# occupancy_states now makes that unreachable on a generated object — its night state holds every
+# residential use type at 1.0, so no daytime state can exceed it. The check stays because validate()
+# also runs over objects this pipeline did not just produce: an archived run, or a JSON somebody
+# edited by hand. It costs nothing and it is the one place that would still catch either.
+#
+# The set comes from occupancy_states so there is one definition of "residential". Sauna is
+# deliberately not in it — a sauna is shared amenity, not sleeping accommodation, and counting it
+# made a night state that correctly closes the sauna read as thinner than a weekend afternoon.
+SLEEPING_USE_TYPES = residential_use_types
 SLEEPING_SHARE_THRESHOLD = 0.25
 NIGHT_WORDS = ("night", "asleep", "sleeping", "overnight", "night-time", "nighttime")
 DAY_WORDS = ("day", "daytime", "day-time", "working hours", "office hours", "waking")
@@ -278,9 +286,15 @@ def sleeping_share(obj):
 
 
 def state_of_text(state):
-    """Which of the two states a free-text occupancy_state names, if either. Split out from
-    state_of() so scenario generation can read the state off its own reply — where the occupancy
-    block does not exist yet — against the same vocabulary this module judges the finished object by."""
+    """Which of the two periods an occupancy_state falls in, if either.
+
+    A generated object names a state from occupancy_states, so the table answers it exactly. The
+    free-text reading below is the fallback for objects written before the states existed, where the
+    field held whatever phrase the model chose."""
+    period = period_of(state)
+    if period is not None:
+        return period if period in ("night", "day") else None
+
     text = str(state or "").lower()
     if any(w in text for w in NIGHT_WORDS):
         return "night"
@@ -356,55 +370,58 @@ def occupancy_state_issues(obj):
                       f"of amenity and commercial space is not part of this comparison"}]
 
 
-def multiplier_signature(scenario):
-    """The per-use_type multipliers, as a comparable key. Two scenarios sharing a signature seed
-    occupants into the same rooms in the same proportions, whatever their exits do."""
-    sim = scenario.get("simulation") or {}
-    return tuple(sorted((m.get("use_type"), round(float(m.get("multiplier") or 0), 4))
-                        for m in (sim.get("occupancy_multipliers") or [])))
+def scenario_signature(scenario):
+    """What makes two scenarios the same run: the occupancy state, and the exits it closes. The
+    state fixes the population and the rooms it starts in; the discounted exits fix the ways out.
+
+    This used to key on the multiplier set alone, which flagged the classic pair — a base case and
+    the same occupancy with the main exit discounted — as a duplicate. That pair is the comparison
+    a discounted-exit study exists to make."""
+    state = (scenario.get("occupancy") or {}).get("occupancy_state")
+    return (state, tuple(sorted(discounted_exit_ids(scenario))))
+
+
+def unknown_state_issues(obj):
+    """An occupancy_state outside the table. Generation cannot produce one — the field is an enum
+    the provider constrains against — so this catches an edited or pre-states object, where the
+    multipliers stored beside it are whatever was written rather than what the state means."""
+    return [{"scenario": scn.get("id"), "field": "occupancy.occupancy_state",
+             "issue": f"{(scn.get('occupancy') or {}).get('occupancy_state')!r} is not one of the "
+                      f"defined occupancy states {sorted(occupancy_states)} — its multipliers "
+                      f"cannot be checked against a state definition"}
+            for scn in obj.get("scenarios") or []
+            if (scn.get("occupancy") or {}).get("occupancy_state") not in occupancy_states]
 
 
 def occupancy_variance_issues(obj):
-    """A scenario set only earns its keep if the scenarios differ. Flag totals at the computed
-    ceiling, repeated totals, and repeated distributions — each of which makes a scenario a
-    duplicate run rather than a distinct study input."""
+    """A scenario set only earns its keep if the scenarios differ.
+
+    Two checks went when the states became a table. A scenario at the full computed load was worth
+    flagging while an empty multiplier set defaulted every room to 1.0; now a state always thins
+    something, and on a wholly residential building the night state SHOULD sit at the computed load
+    — that is the design case, not a fault. Repeated totals went too: two different states can
+    coincide on a headcount while standing the people in different rooms, which is a different
+    evacuation, not a duplicate.
+
+    What remains is genuine duplication — the same state, closing the same exits."""
     scenarios = obj.get("scenarios") or []
     if len(scenarios) < 2:
         return []
 
-    issues = []
-    ceiling = (obj.get("building") or {}).get("total_occupant_load")
-
-    by_total, by_signature = defaultdict(list), defaultdict(list)
+    issues = list(unknown_state_issues(obj))
+    by_signature = defaultdict(list)
     for scn in scenarios:
-        sid = scn.get("id")
-        total = scenario_total(scn)
-        if isinstance(total, int):
-            by_total[total].append(sid)
-            if ceiling and total >= ceiling:
-                issues.append({"scenario": sid, "field": "occupants_total",
-                               "issue": f"occupants_total {total} is the building's whole computed "
-                                        f"load ({ceiling}) — that is a capacity ceiling, not an "
-                                        f"occupancy state; no evacuation happens with every room at "
-                                        f"its code capacity at once"})
-        by_signature[multiplier_signature(scn)].append(sid)
+        by_signature[scenario_signature(scn)].append(scn.get("id"))
 
-    for total, ids in sorted(by_total.items()):
-        if len(ids) > 1:
-            issues.append({"scenario": ", ".join(str(i) for i in ids), "field": "occupants_total",
-                           "issue": f"{len(ids)} scenarios all evacuate {total} occupant(s) — vary the "
-                                    f"occupant load across the set so the scenarios test different "
-                                    f"populations"})
-
-    for signature, ids in by_signature.items():
-        if len(ids) > 1:
-            where = "no occupancy_multipliers at all" if not signature else "identical " \
-                    "occupancy_multipliers"
-            issues.append({"scenario": ", ".join(str(i) for i in ids),
-                           "field": "simulation.occupancy_multipliers",
-                           "issue": f"{len(ids)} scenarios have {where}, so they seed occupants into "
-                                    f"the same rooms in the same proportions — the occupant "
-                                    f"distribution does not vary across the set"})
+    for (state, discounted), ids in by_signature.items():
+        if len(ids) < 2:
+            continue
+        closed = (f"with {', '.join(discounted)} discounted" if discounted
+                  else "with every exit available")
+        issues.append({"scenario": ", ".join(str(i) for i in ids), "field": "occupancy_state",
+                       "issue": f"{len(ids)} scenarios are all '{state}' {closed} — same occupants, "
+                                f"same rooms, same ways out, so they are one simulation described "
+                                f"more than once"})
     return issues
 
 

@@ -1,26 +1,32 @@
-"""Night is the busy state where people sleep on site: residents are home and asleep at night and out
-during the day. A scenario set whose night holds fewer RESIDENTS than its day has the direction
-inverted, and must not reach a Pathfinder study unflagged.
+"""What validate() still says about occupancy, now that the multipliers come from a table.
 
-The comparison is over sleeping-use rooms only, and that is load-bearing rather than a refinement.
-Comparing TOTAL headcount broke on the first real amenity-heavy building it met: communal_amenity
-carried half the computed load, every sane night state empties it, and the total therefore fell
-below the day's however full the dwellings were. The invariant was unreachable rather than unmet, so
-the model spent its repair attempts on arithmetic no multiplier set could satisfy. Residential
-occupancy is what "residents are home at night and out by day" actually claims, and it can always
-be met — see test_a_building_whose_amenity_dominates_is_not_an_inversion."""
+Generation can no longer produce an inverted set — occupancy_states holds every residential use type
+at 1.0 in the night state, which is the schema maximum, so no daytime state can exceed it (proved in
+test_occupancy_states.py). These checks stay because validate() also runs over objects this pipeline
+did not just produce: an archived run from an earlier version, or a JSON somebody edited by hand.
+They cost nothing and they are the only place that would catch either.
+
+The variance check changed shape with the states. It used to flag a scenario at the full computed
+load, and repeated totals, and repeated multiplier sets. The first two went: a night state on a
+wholly residential building SHOULD sit at the computed load — that is the design case — and two
+different states can coincide on a headcount while standing the people in different rooms, which is
+a different evacuation. What is left is genuine duplication: the same occupancy state closing the
+same exits.
+"""
 
 import copy
 
+from core_backend.occupancy_states import multipliers_for
 from core_backend.tests.test_validation_factcheck import minimal_object
-from core_backend.validation import (multiplier_signature, occupancy_state_issues,
-                                     occupancy_variance_issues, sleeping_occupancy, sleeping_share,
-                                     state_of, validate)
+from core_backend.validation import (occupancy_state_issues, occupancy_variance_issues,
+                                     scenario_signature, sleeping_occupancy, sleeping_share,
+                                     state_of, unknown_state_issues, validate)
 
 
-def scenario(sid, state, dwelling, commercial):
+def scenario(sid, state, dwelling, commercial, discounted=()):
     return {"id": sid,
             "occupancy": {"occupancy_state": state},
+            "scenario_objective": {"conditions": {"exits_discounted": list(discounted)}},
             "simulation": {"occupancy_multipliers": [
                 {"use_type": "dwelling", "multiplier": dwelling, "reason": "r"},
                 {"use_type": "commercial", "multiplier": commercial, "reason": "r"}]}}
@@ -29,8 +35,8 @@ def scenario(sid, state, dwelling, commercial):
 def sample_object(night_dwelling, day_dwelling, sleeping_load=30, other_load=10):
     """A block of flats with an amenity: `sleeping_load` in dwellings, `other_load` in commercial.
 
-    Night and day differ only in their DWELLING multiplier — the residential population is what the
-    invariant compares, so whatever totals the scenarios happen to reach are beside the point."""
+    The multipliers are set directly here rather than taken from a state, because the point of these
+    tests is what happens to an object whose multipliers did NOT come from the table."""
     return {
         "building": {"total_occupant_load": sleeping_load + other_load},
         "spaces": [
@@ -41,6 +47,8 @@ def sample_object(night_dwelling, day_dwelling, sleeping_load=30, other_load=10)
                       scenario("SCN-DAY", "daytime peak", day_dwelling, 1.0)],
     }
 
+
+# ---- the direction check, on objects the table did not build ---------------------------------
 
 def test_night_below_day_is_flagged():
     issues = occupancy_state_issues(sample_object(night_dwelling=0.3, day_dwelling=1.0))
@@ -65,7 +73,6 @@ def test_a_building_whose_amenity_dominates_is_not_an_inversion():
     full at night and thinned by day, which is exactly right. Comparing totals flagged this; the
     residential comparison must not."""
     obj = sample_object(night_dwelling=1.0, day_dwelling=0.4, sleeping_load=30, other_load=60)
-    night, day = obj["scenarios"]
 
     assert sleeping_occupancy(obj["spaces"], {"dwelling": 1.0, "commercial": 0.0}) == 30
     assert sleeping_occupancy(obj["spaces"], {"dwelling": 0.4, "commercial": 1.0}) == 12
@@ -92,85 +99,122 @@ def test_check_needs_both_states_to_compare():
     assert occupancy_state_issues(obj) == []
 
 
-def test_states_are_read_from_free_text():
+def test_a_state_key_is_read_from_the_table():
+    """A generated object names a state from occupancy_states, so the period is looked up rather
+    than guessed at from the words in it."""
+    assert state_of({"occupancy": {"occupancy_state": "night_sleeping"}}) == "night"
+    assert state_of({"occupancy": {"occupancy_state": "working_day"}}) == "day"
+    assert state_of({"occupancy": {"occupancy_state": "weekend_daytime"}}) == "day"
+
+
+def test_a_transitional_state_is_outside_the_comparison():
+    """early_morning and evening_communal sit between night and day by construction; comparing them
+    against either says nothing."""
+    assert state_of({"occupancy": {"occupancy_state": "evening_communal"}}) is None
+    assert state_of({"occupancy": {"occupancy_state": "early_morning"}}) is None
+
+
+def test_free_text_states_still_read_for_older_objects():
+    """Objects written before the states existed held whatever phrase the model chose."""
     assert state_of({"occupancy": {"occupancy_state": "night, occupants asleep"}}) == "night"
     assert state_of({"occupancy": {"occupancy_state": "Daytime peak occupancy"}}) == "day"
     assert state_of({"occupancy": {"occupancy_state": "maintenance closure"}}) is None
 
 
-def test_the_worst_scenario_of_each_state_is_the_one_compared():
+def test_the_fullest_scenario_of_each_state_is_the_one_compared():
     """Several night scenarios: the fullest one carries the comparison, not whichever came first."""
     obj = sample_object(night_dwelling=0.2, day_dwelling=0.6)
     obj["scenarios"].append(scenario("SCN-NIGHT-2", "night", 1.0, 0.0))
     assert occupancy_state_issues(obj) == []
 
 
-def varied_set():
-    """Four scenarios that genuinely differ: different totals, different multipliers."""
-    def scn(sid, state, total, dwelling, commercial):
-        return {"id": sid, "occupancy": {"occupancy_state": state, "occupants_total": total},
-                "simulation": {"occupancy_multipliers": [
-                    {"use_type": "dwelling", "multiplier": dwelling, "reason": "r"},
-                    {"use_type": "commercial", "multiplier": commercial, "reason": "r"}]}}
+def test_a_table_built_set_cannot_be_inverted():
+    """The end of the fault. Both scenarios take their multipliers from the states, and there is no
+    pair of states that can produce the inversion."""
+    def from_state(sid, state):
+        return {"id": sid, "occupancy": {"occupancy_state": state},
+                "scenario_objective": {"conditions": {"exits_discounted": []}},
+                "simulation": {"occupancy_multipliers": multipliers_for(state)}}
 
+    for day_state in ("working_day", "weekend_daytime"):
+        obj = {"building": {"total_occupant_load": 40},
+               "spaces": [{"guid": "A", "use_type": "dwelling", "occupant_load": 30},
+                          {"guid": "B", "use_type": "commercial", "occupant_load": 10}],
+               "scenarios": [from_state("SCN-001", "night_sleeping"),
+                             from_state("SCN-002", day_state)]}
+        assert occupancy_state_issues(obj) == []
+
+
+# ---- variance: identity is the state and the exits it closes ---------------------------------
+
+def varied_set():
+    """Four scenarios that genuinely differ — three states, and one repeat of a state with a
+    different exit discounted."""
     return {"building": {"total_occupant_load": 40},
             "spaces": [{"guid": "A", "use_type": "dwelling", "occupant_load": 30},
                        {"guid": "B", "use_type": "commercial", "occupant_load": 10}],
-            "scenarios": [scn("SCN-001", "night", 27, 0.9, 0.0),
-                          scn("SCN-002", "daytime", 13, 0.3, 1.0),
-                          scn("SCN-003", "evening", 21, 0.7, 0.0),
-                          scn("SCN-004", "night, one exit lost", 24, 0.8, 0.0)]}
+            "scenarios": [scenario("SCN-001", "night_sleeping", 1.0, 0.0),
+                          scenario("SCN-002", "working_day", 0.3, 1.0),
+                          scenario("SCN-003", "evening_communal", 0.9, 0.3),
+                          scenario("SCN-004", "night_sleeping", 1.0, 0.0,
+                                   discounted=("Exit 1",))]}
 
 
 def test_a_genuinely_varied_set_passes():
     assert occupancy_variance_issues(varied_set()) == []
 
 
-def test_a_scenario_at_the_full_computed_load_is_flagged():
+def test_the_same_state_closing_the_same_exits_is_flagged():
     obj = varied_set()
-    obj["scenarios"][0]["occupancy"]["occupants_total"] = 40      # the whole computed ceiling
+    obj["scenarios"][3]["scenario_objective"]["conditions"]["exits_discounted"] = []
     issues = occupancy_variance_issues(obj)
-    assert any("capacity ceiling" in i["issue"] for i in issues)
+
+    flagged = next(i for i in issues if i["field"] == "occupancy_state")
+    assert "SCN-001" in flagged["scenario"] and "SCN-004" in flagged["scenario"]
+    assert "night_sleeping" in flagged["issue"]
+    assert "every exit available" in flagged["issue"]
 
 
-def test_repeated_totals_are_flagged():
+def test_the_same_state_with_a_different_exit_lost_is_not_a_duplicate():
+    """The pair a discounted-exit study is built on: hold the population still, take an exit away.
+    Keying identity on the multipliers alone used to call this a duplicate."""
     obj = varied_set()
-    obj["scenarios"][2]["occupancy"]["occupants_total"] = 27      # same as SCN-001
-    issues = occupancy_variance_issues(obj)
-    flagged = next(i for i in issues if i["field"] == "occupants_total")
-    assert "SCN-001" in flagged["scenario"] and "SCN-003" in flagged["scenario"]
-    assert "27" in flagged["issue"]
+
+    assert scenario_signature(obj["scenarios"][0]) != scenario_signature(obj["scenarios"][3])
+    assert occupancy_variance_issues(obj) == []
 
 
-def test_repeated_distributions_are_flagged_even_when_totals_differ():
-    """The multipliers are what actually place people; equal ones mean an identical distribution."""
-    obj = varied_set()
-    obj["scenarios"][2]["simulation"]["occupancy_multipliers"] = [
-        {"use_type": "dwelling", "multiplier": 0.9, "reason": "r"},
-        {"use_type": "commercial", "multiplier": 0.0, "reason": "r"}]      # same as SCN-001
-    issues = occupancy_variance_issues(obj)
-    flagged = next(i for i in issues if i["field"] == "simulation.occupancy_multipliers")
-    assert "identical" in flagged["issue"]
-    assert not any(i["field"] == "occupants_total" for i in issues)         # totals still differ
+def test_a_night_state_at_the_full_computed_load_is_no_longer_flagged():
+    """On a wholly residential building the night state IS the computed load — every dwelling at
+    its code-derived capacity, with everyone asleep. That is the design case, not a fault."""
+    obj = {"building": {"total_occupant_load": 30},
+           "spaces": [{"guid": "A", "use_type": "dwelling", "occupant_load": 30}],
+           "scenarios": [scenario("SCN-001", "night_sleeping", 1.0, 0.0),
+                         scenario("SCN-002", "working_day", 0.3, 1.0)]}
+    obj["scenarios"][0]["occupancy"]["occupants_total"] = 30
+
+    assert occupancy_variance_issues(obj) == []
 
 
-def test_missing_multipliers_across_the_set_are_flagged():
-    """Empty multipliers everywhere is the full-load default — the case we no longer want."""
+def test_two_states_landing_on_the_same_total_are_not_duplicates():
+    """Coinciding totals are an arithmetic accident, not duplication — the states stand the same
+    number of people in different rooms."""
     obj = varied_set()
     for scn in obj["scenarios"]:
-        scn["simulation"]["occupancy_multipliers"] = []
-    issues = occupancy_variance_issues(obj)
-    assert any("no occupancy_multipliers at all" in i["issue"] for i in issues)
+        scn["occupancy"]["occupants_total"] = 20
+
+    assert occupancy_variance_issues(obj) == []
 
 
-def test_multiplier_order_does_not_count_as_variance():
+def test_exit_order_does_not_count_as_variance():
     obj = varied_set()
-    obj["scenarios"][2]["simulation"]["occupancy_multipliers"] = [
-        {"use_type": "commercial", "multiplier": 0.0, "reason": "r"},
-        {"use_type": "dwelling", "multiplier": 0.9, "reason": "r"}]      # SCN-001 reordered
-    assert multiplier_signature(obj["scenarios"][2]) == multiplier_signature(obj["scenarios"][0])
-    assert any(i["field"] == "simulation.occupancy_multipliers"
-               for i in occupancy_variance_issues(obj))
+    obj["scenarios"][0]["scenario_objective"]["conditions"]["exits_discounted"] = ["Exit 2",
+                                                                                   "Exit 1"]
+    obj["scenarios"][3]["scenario_objective"]["conditions"]["exits_discounted"] = ["Exit 1",
+                                                                                   "Exit 2"]
+
+    assert scenario_signature(obj["scenarios"][0]) == scenario_signature(obj["scenarios"][3])
+    assert any(i["field"] == "occupancy_state" for i in occupancy_variance_issues(obj))
 
 
 def test_a_single_scenario_has_nothing_to_vary_against():
@@ -179,7 +223,23 @@ def test_a_single_scenario_has_nothing_to_vary_against():
     assert occupancy_variance_issues(obj) == []
 
 
-def test_validate_reports_the_invariant():
+def test_a_state_outside_the_table_is_reported():
+    """Generation cannot produce one — the field is an enum. An edited or pre-states object can,
+    and its multipliers then mean whatever was written rather than what a state defines."""
+    obj = varied_set()
+    obj["scenarios"][1]["occupancy"]["occupancy_state"] = "some state I made up"
+
+    issues = unknown_state_issues(obj)
+
+    assert len(issues) == 1
+    assert issues[0]["scenario"] == "SCN-002"
+    assert issues[0]["field"] == "occupancy.occupancy_state"
+    assert issues[0] in occupancy_variance_issues(obj)
+
+
+# ---- and what validate() reports on the whole object -----------------------------------------
+
+def test_validate_reports_the_direction_invariant():
     obj = minimal_object("Evacuate 10 occupants.")     # one 'living' space, computed load 10
     obj["scenarios"][1]["occupancy"]["occupancy_state"] = "day"
     # night thins the living space to a third while day leaves it full: inverted
@@ -195,9 +255,24 @@ def test_validate_reports_the_invariant():
 
 
 def test_validate_reports_the_variance_invariant():
-    obj = minimal_object("Evacuate 10 occupants.")     # both scenarios: 10 occupants, no multipliers
+    obj = minimal_object("Evacuate 10 occupants.")
+    for scn in obj["scenarios"]:                       # same state, same exits: one run twice
+        scn["occupancy"]["occupancy_state"] = "night_sleeping"
+        scn["scenario_objective"]["conditions"]["exits_discounted"] = []
+
     out = validate(copy.deepcopy(obj))
+
     invariants = out["validation"]["invariants_checked"]
     assert invariants["occupancy_varies_across_scenarios"] is False
-    fields = {i["field"] for i in out["validation"]["occupancy_state_issues"]}
-    assert fields == {"occupants_total", "simulation.occupancy_multipliers"}
+    assert any(i["field"] == "occupancy_state"
+               for i in out["validation"]["occupancy_state_issues"])
+
+
+def test_validate_passes_a_set_whose_states_differ():
+    obj = minimal_object("Evacuate 10 occupants.")
+    obj["scenarios"][0]["occupancy"]["occupancy_state"] = "night_sleeping"
+    obj["scenarios"][1]["occupancy"]["occupancy_state"] = "working_day"
+
+    out = validate(copy.deepcopy(obj))
+
+    assert out["validation"]["invariants_checked"]["occupancy_varies_across_scenarios"] is True

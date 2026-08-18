@@ -8,7 +8,7 @@
   {"long_name": "STAIRCASE", "name": "STAIRCASE:1702266", "expected": "stair"},
   {"long_name": "VESTIBULE", "name": "VESTIBULE:1600", "expected": "circulation"},
   {"long_name": "COMMUNAL SPACE", "name": "COMMUNAL SPACE:1700", "expected": "communal_amenity"},
-  {"long_name": "GYM", "name": "GYM:1800", "expected": "communal_amenity"},
+  {"long_name": "GYM", "name": "GYM:1800", "expected": "gym"},
   {"long_name": "LOCKER ROOM", "name": "LOCKER ROOM:1801", "expected": "storage"},
   {"long_name": "STORE COMMON", "name": "STORE COMMON:1438929", "expected": "storage"},
   {"long_name": "STORE RESIDENTS", "name": "STORE RESIDENTS:1409016", "expected": "storage"},

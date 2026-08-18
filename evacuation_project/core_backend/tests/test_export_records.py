@@ -81,10 +81,12 @@ def sample_object():
                  "exits_available": ["E1", "E2"],
                  "routes": [{"from_area": "G", "via": "ST1", "to_exit": "E1", "note": ""}],
                  "restricted_areas": []},
-             "occupancy": {"occupants_total": 20, "occupancy_state": "night"},
+             "occupancy": {"occupants_total": 20, "occupancy_state": "night_sleeping",
+                           "occupancy_state_label": "Night - residents at home and asleep"},
              "occupant_distribution": ["G: 20"], "assumptions": ["all exits usable"],
-             "bottlenecks": [], "risks": [], "narrative": "All leave.", "simulation": sample_simulation(),
-             "fire_conditions": sample_fire(),
+             "bottlenecks": [], "risks": [], "narrative": "All leave.",
+             "occupancy_rationale": "the fullest the dwellings ever are",
+             "simulation": sample_simulation(), "fire_conditions": sample_fire(),
              "regulatory_justification": "ENG-R11/R12", "ai_explanation": "baseline"},
             {"id": "SCN-EXIT-BLOCKED", "type": "one_exit_discounted", "title": "One exit discounted",
              "scenario_objective": {"purpose": "tests resilience to losing the front door",
@@ -93,9 +95,11 @@ def sample_object():
                  "exits_available": ["E2"],
                  "routes": [{"from_area": "G", "via": "ST1", "to_exit": "E2", "note": "reroute"}],
                  "restricted_areas": [{"area": "Store", "reason": "fire origin"}]},
-             "occupancy": {"occupants_total": 20, "occupancy_state": "night"},
+             "occupancy": {"occupants_total": 20, "occupancy_state": "night_sleeping",
+                           "occupancy_state_label": "Night - residents at home and asleep"},
              "occupant_distribution": ["G: 20"], "assumptions": ["E1 blocked"],
              "bottlenecks": ["E2"], "risks": ["congestion"], "narrative": "Reroute.",
+             "occupancy_rationale": "the fullest the dwellings ever are",
              "simulation": sample_simulation(), "fire_conditions": sample_fire("Store", affected_exits=["E1"]),
              "regulatory_justification": "ADB discounted-exit principle", "ai_explanation": "resilience"},
         ],
@@ -245,10 +249,15 @@ def test_the_three_blocks_survive_a_scenario_that_never_got_them():
     assert body["evacuation_time"]["estimated_total_s"] is None
 
 
-def test_occupancy_is_the_headline_total_and_state_only():
+def test_occupancy_is_the_headline_total_the_state_and_why():
+    """The per-room seeding stays in the building object; the record carries the headline. The state
+    is a key from occupancy_states, so a reader can look up what it did to every room type, and the
+    rationale is the judgement behind choosing it."""
     for rec in build_records(sample_object()):
         occupancy = rec["scenario"]["occupancy"]
-        assert occupancy == {"occupants_total": 20, "occupancy_state": "night"}
+        assert occupancy == {"occupants_total": 20, "occupancy_state": "night_sleeping",
+                             "occupancy_state_label": "Night - residents at home and asleep",
+                             "rationale": "the fullest the dwellings ever are"}
 
 
 def test_the_population_is_stated_once_not_beside_the_conditions():

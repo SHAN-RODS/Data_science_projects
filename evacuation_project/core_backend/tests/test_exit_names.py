@@ -134,7 +134,7 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
         type="one_exit_discounted", title="Exit 3 unavailable",
         purpose="shows what the loss of Exit 3 costs the Ground storey",
         conditions={"exits_available": ["Exit 1", "Exit 2"], "exits_discounted": ["Exit 3"],
-                    "occupancy_state": "night"},
+                    "occupancy_state": "night_sleeping"},
         assumptions=["Exit 3 is assumed blocked"],
         occupant_distribution=["Ground: dwellings fully occupied"],
         routes=[{"from_area": "Ground", "via": "corridor", "to_exit": "Exit 1", "note": "12.0 m"}],
@@ -153,7 +153,6 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
                     "profiles": [{"name": "adult", "fraction": 1.0, "speed_distribution": "normal",
                                   "speed_ms_mean": 1.2, "speed_ms_sd": 0.0,
                                   "shoulder_width_m": 0.45, "basis": "able adults"}],
-                    "occupancy_multipliers": [],
                     "evacuation_time": {"estimated_total_s": 300.0,
                                         "basis": "60 s pre-movement plus 12.0 m of travel"}},
         fire_conditions={"fire_origin": "Living room", "fire_origin_storey": "Ground",
@@ -161,6 +160,7 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
                          "detection_and_alarm": "smoke alarms in the dwelling",
                          "smoke_conditions": "smoke blocks the Exit 3 lobby",
                          "basis": "origin chosen to close Exit 3"},
+        occupancy_rationale="the fullest the dwellings ever are, so losing Exit 3 bites hardest",
         regulatory_justification="ENG-R11", ai_explanation="tests the loss of Exit 3")
 
     scn = assemble_scenario(content, 1, names, SAMPLE_SPACES)
@@ -180,12 +180,12 @@ def test_the_ai_writes_names_and_assembly_pins_the_ids_to_them():
 def test_the_population_is_seeded_into_the_occupancy_block_not_the_conditions():
     """occupancy_state and the computed occupants_total are stated once. attach_occupancy() picks
     them up from there, so the conditions never carry a second copy to drift from. The model states
-    no total at all — it comes from the multipliers against the rooms."""
+    no total at all — it comes from the occupancy state's multipliers against the rooms."""
     names = exit_names(sample_exits())
     content = ScenarioContent(
         type="night", title="Night", purpose="p",
         conditions={"exits_available": ["Exit 1"], "exits_discounted": [],
-                    "occupancy_state": "night"},
+                    "occupancy_state": "night_sleeping"},
         assumptions=[], occupant_distribution=[], routes=[], restricted_areas=[],
         bottlenecks=[], risks=[], narrative="n",
         simulation={"movement_model": "steering",
@@ -198,17 +198,18 @@ def test_the_population_is_seeded_into_the_occupancy_block_not_the_conditions():
                     "profiles": [{"name": "adult", "fraction": 1.0, "speed_distribution": "normal",
                                   "speed_ms_mean": 1.2, "speed_ms_sd": 0.0,
                                   "shoulder_width_m": 0.45, "basis": "able adults"}],
-                    "occupancy_multipliers": [],
                     "evacuation_time": {"estimated_total_s": 300.0,
                                         "basis": "60 s pre-movement plus 12.0 m of travel"}},
         fire_conditions={"fire_origin": "not fire-specific", "detection_and_alarm": "d",
                          "smoke_conditions": "s", "basis": "b"},
+        occupancy_rationale="residents are in and asleep",
         regulatory_justification="ENG-R11", ai_explanation="x")
 
-    # no multipliers, so every room sits at its computed load and the total is their sum
+    # night_sleeping holds dwellings at 1.0, so every room sits at its computed load
     scn = assemble_scenario(content, 1, names, SAMPLE_SPACES)
 
-    assert scn["occupancy"] == {"occupants_total": 4, "occupancy_state": "night"}
+    assert scn["occupancy"] == {"occupants_total": 4, "occupancy_state": "night_sleeping",
+                                "occupancy_state_label": "Night - residents at home and asleep"}
     assert set(scn["scenario_objective"]["conditions"]) == {"exits_discounted",
                                                             "exits_discounted_ifc_ids"}
 
@@ -236,7 +237,7 @@ def named_object():
                  "exits_available": ["Exit 1", "Exit 2"],
                  "exits_available_ifc_ids": resolve_exit_ids(["Exit 1", "Exit 2"], names),
                  "routes": [], "restricted_areas": []},
-             "occupancy": {"occupants_total": 4, "occupancy_state": "day"},
+             "occupancy": {"occupants_total": 4, "occupancy_state": "working_day"},
              "assumptions": [], "occupant_distribution": [], "bottlenecks": [],
              "risks": [], "narrative": "Everyone leaves by Exit 1."},
         ],

@@ -266,7 +266,8 @@ estimate = evacuation_time(scn)
 with st.container(border=True):
     st.markdown(f"### {scn.get('title')}")
     if occupancy.get("occupancy_state"):
-        st.caption(f"Occupancy state — {occupancy['occupancy_state']}")
+        st.caption(f"Occupancy state — "
+                   f"{occupancy.get('occupancy_state_label') or occupancy['occupancy_state']}")
     if objective.get("purpose"):
         st.write(objective["purpose"])
 
@@ -292,6 +293,7 @@ with tab_story:
         field("Why the AI chose this scenario", scn.get("ai_explanation"))
     with o2:
         field("Regulatory justification", scn.get("regulatory_justification"))
+    field("Why this occupancy state", scn.get("occupancy_rationale"))
 
 with tab_people:
     p1, p2 = st.columns(2)
@@ -299,6 +301,13 @@ with tab_people:
         bullets("Occupant distribution", scn.get("occupant_distribution", []))
     with p2:
         bullets("Assumptions", scn.get("assumptions", []))
+
+    multipliers = (scn.get("simulation") or {}).get("occupancy_multipliers") or []
+    if multipliers:
+        st.markdown("**How this state thins the computed load**")
+        st.caption("Applied per room type from the published occupancy states — computed, not "
+                   "chosen by the AI. The AI picked the state; these are what it means.")
+        st.dataframe(multipliers, width='stretch', hide_index=True)
 
     if occupancy.get("unplaced_total"):
         st.warning(f"{occupancy['unplaced_total']} occupant(s) sit in "

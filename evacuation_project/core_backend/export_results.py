@@ -40,10 +40,15 @@ def ifc_elements(obj, scn):
 
 
 def occupancy_summary(scn):
+    """The headline population: how many, in which occupancy state, and why that state. The state
+    is a key from occupancy_states, so a reader can look up exactly what it did to each room type;
+    the rationale is the AI's, and it is the judgement the state selection rests on."""
     occ = scn.get("occupancy") or {}
     return {
         "occupants_total": occ.get("occupants_total"),
         "occupancy_state": occ.get("occupancy_state"),
+        "occupancy_state_label": occ.get("occupancy_state_label"),
+        "rationale": scn.get("occupancy_rationale"),
     }
 
 

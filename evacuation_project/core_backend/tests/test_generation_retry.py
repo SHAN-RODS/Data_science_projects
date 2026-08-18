@@ -1,10 +1,10 @@
 """The scenario generation call repairs a schema rejection instead of losing the whole run.
 
-Generation is a single expensive call (16k tokens, up to a 600 s read). One field the model puts out
-of range otherwise throws all of it away. The case seen in practice is an ``occupancy_multiplier``
-above 1.0: a model reaching for a "crowded" scenario tries to scale occupancy up, which the schema
-forbids by design -- a computed occupant load is already the room's code-derived capacity, so there
-is no valid multiplier above 1.0.
+Generation is a single expensive call (up to 64k tokens and a 600 s read). One field the model puts
+out of range otherwise throws all of it away. The case that drove this was an occupancy multiplier
+above 1.0, from a model reaching for a "crowded" scenario; the multipliers now come from
+occupancy_states rather than the reply, so the same repair is pinned here on a bound the model does
+still set -- a profile fraction, which is a share of the population and cannot exceed 1.0.
 
 The repair hands the model its own validation error. What it must NOT do is relax the constraint, so
 the last test pins that a model which never complies still fails loudly.
@@ -24,11 +24,14 @@ def structured_reply(parsed=None, parsing_error=None, raw=None):
     return {"raw": raw, "parsed": parsed, "parsing_error": parsing_error}
 
 
-def sample_scenario(multiplier):
+def sample_scenario(fraction=1.0, state="night_sleeping", discounted=()):
+    """A schema-valid scenario. ``fraction`` is the profile share -- the bound the repair tests put
+    out of range -- and ``state`` is the occupancy state, which is now an enum the model chooses
+    from rather than a multiplier set it invents."""
     return {
         "id": "S1", "type": "base_case", "title": "Base", "purpose": "p",
-        "conditions": {"exits_available": ["E"], "occupancy_state": "day",
-                       "exits_discounted": []},
+        "conditions": {"exits_available": ["E"], "occupancy_state": state,
+                       "exits_discounted": list(discounted)},
         "assumptions": [], "occupant_distribution": [], "routes": [], "restricted_areas": [],
         "bottlenecks": [], "risks": [],
         "narrative": "n",
@@ -39,22 +42,21 @@ def sample_scenario(multiplier):
             "pre_movement": {"detection": "d", "alarm": "a", "recognition": "r",
                              "response_delay": {"distribution": "normal", "mean_s": 60.0,
                                                 "sd_s": 10.0, "basis": "b"}},
-            "profiles": [{"name": "adult", "fraction": 1.0, "speed_distribution": "normal",
+            "profiles": [{"name": "adult", "fraction": fraction, "speed_distribution": "normal",
                           "speed_ms_mean": 1.2, "speed_ms_sd": 0.0, "shoulder_width_m": 0.45,
                           "basis": "b"}],
-            "occupancy_multipliers": [{"use_type": "dwelling", "multiplier": multiplier,
-                                       "reason": "r"}],
             "evacuation_time": {"estimated_total_s": 300.0, "basis": "b"},
         },
         "fire_conditions": {"fire_origin": "not fire-specific", "fire_origin_storey": "",
                             "affected_exits": [], "affected_routes": [],
                             "detection_and_alarm": "d", "smoke_conditions": "s", "basis": "b"},
-        "regulatory_justification": "j", "ai_explanation": "e",
+        "occupancy_rationale": "why this state", "regulatory_justification": "j",
+        "ai_explanation": "e",
     }
 
 
 class FakeLLM:
-    """Returns the multiplier at each position of ``sequence``, sticking on the last one."""
+    """Returns the profile fraction at each position of ``sequence``, sticking on the last one."""
 
     def __init__(self, sequence):
         self.sequence = sequence
@@ -84,16 +86,16 @@ def test_a_valid_reply_is_not_retried():
     analysis = invoke_structured(llm, "PROMPT")
 
     assert len(llm.prompts) == 1
-    assert analysis.scenarios[0].simulation.occupancy_multipliers[0].multiplier == 1.0
+    assert analysis.scenarios[0].simulation.profiles[0].fraction == 1.0
 
 
-def test_an_out_of_range_multiplier_is_repaired_rather_than_losing_the_run():
+def test_an_out_of_range_bound_is_repaired_rather_than_losing_the_run():
     llm = FakeLLM([2.0, 1.0])          # rejected, then corrected
 
     analysis = invoke_structured(llm, "PROMPT")
 
     assert len(llm.prompts) == 2
-    assert analysis.scenarios[0].simulation.occupancy_multipliers[0].multiplier == 1.0
+    assert analysis.scenarios[0].simulation.profiles[0].fraction == 1.0
     # the retry must carry both the original facts and the reason the last reply was rejected
     assert "PROMPT" in llm.prompts[1]
     assert "less_than_equal" in llm.prompts[1]
@@ -108,7 +110,7 @@ def test_a_model_that_never_complies_still_fails_and_the_bound_holds():
 
     assert len(llm.prompts) > 1                       # it did try to repair
     # and the error the user sees names the real offending field
-    assert "occupancy_multipliers" in str(excinfo.value)
+    assert "profiles" in str(excinfo.value)
 
 
 def test_attempts_are_bounded():
@@ -161,7 +163,7 @@ def test_an_empty_reply_is_retried_not_handed_back_as_none():
     analysis = invoke_structured(llm, "PROMPT")
 
     assert len(llm.prompts) == 2
-    assert analysis.scenarios[0].simulation.occupancy_multipliers[0].multiplier == 1.0
+    assert analysis.scenarios[0].simulation.profiles[0].fraction == 1.0
     assert "PROMPT" in llm.prompts[1]
     assert "no structured result" in llm.prompts[1]
 

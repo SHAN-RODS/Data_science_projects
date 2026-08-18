@@ -158,6 +158,7 @@ def occupancy_block(obj, scenario):
     return {
         "occupants_total": seeded.get("occupants_total"),
         "occupancy_state": seeded.get("occupancy_state"),
+        "occupancy_state_label": seeded.get("occupancy_state_label"),
         "placed_total": sum(allocation.values()),
         "unplaced_total": sum(unplaced_counts.values()),
         "unallocated_total": unallocated,

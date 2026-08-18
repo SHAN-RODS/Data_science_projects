@@ -295,6 +295,7 @@ scenario_schema = {
                         "properties": {
                             "occupants_total": {"type": ["integer", "null"], "minimum": 0},
                             "occupancy_state": {"type": ["string", "null"]},
+                            "occupancy_state_label": {"type": ["string", "null"]},
                             "placed_total": {"type": "integer", "minimum": 0},
                             "unplaced_total": {"type": "integer", "minimum": 0},
                             "unallocated_total": {"type": "integer", "minimum": 0},
@@ -350,6 +351,7 @@ scenario_schema = {
                             },
                         },
                     },
+                    "occupancy_rationale": {"type": "string"},
                     "regulatory_justification": {"type": "string"},
                     "ai_explanation": {"type": "string"},
                 },

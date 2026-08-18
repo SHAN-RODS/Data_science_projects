@@ -15,7 +15,8 @@ from core_backend.sample_paths import resolve_ifc
 use_types = [
     "bedroom", "living", "kitchen", "kitchen_living", "dining", "dwelling",
     "circulation", "stair", "sanitary", "sauna", "storage", "plant",
-    "parking", "communal_amenity", "commercial", "measurement_zone", "unknown",
+    "parking", "communal_amenity", "gym", "laundry", "commercial",
+    "measurement_zone", "unknown",
 ]
 
 keyword_group = [
@@ -33,8 +34,9 @@ keyword_group = [
     ("storage", ["storage", "store", "closet", "locker", "utility", "varasto", "bod"]),
     ("plant", ["mechanical", "electrical", "boiler", "heating", "ventilation", "vent",
                "shaft", "chase", "riser", "technical", "plant", "lift", "elevator", "hiss"]),
-    ("communal_amenity", ["gym", "communal", "community", "laundry", "amenity",
-                          "meeting", "common"]),
+    ("gym", ["gym", "fitness", "treningsrom", "kuntosali", "weights room"]),
+    ("laundry", ["laundry", "vaskeri", "vaskerom", "pesula", "pyykki"]),
+    ("communal_amenity", ["communal", "community", "amenity", "meeting", "common"]),
     ("commercial", ["business", "office", "retail", "commercial", "cafe", "restaurant", "shop"]),
     ("circulation", ["corridor", "hallway", "passage", "lobby", "landing", "vestibule",
                      "foyer", "entrance", "turning free space", "turning", "circulation",
@@ -123,7 +125,9 @@ llm_instructions = (
     f"  {llm_use_types}, unknown\n"
     "Guidance: 'measurement_zone' is a BIM area/volume overlay, not a real room; 'dwelling' is a "
     "whole apartment; 'circulation' covers corridors/lobbies/landings; 'plant' covers shafts, risers "
-    "and technical rooms. Base your choice ONLY on the provided name, long_name, area and storey — do "
+    "and technical rooms. 'communal_amenity' is a shared lounge, common or meeting room - a gym or a "
+    "laundry is NOT one, they have their own types, because they hold far fewer people per square "
+    "metre than an assembly room does. Base your choice ONLY on the provided name, long_name, area and storey — do "
     "not invent facts. If a space is genuinely undeterminable, return 'unknown' with low confidence. "
     "Return one classification per space, using the given index."
 )
