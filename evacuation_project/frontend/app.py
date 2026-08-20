@@ -165,7 +165,7 @@ if not gate["passed"]:
 
 if obj is None:
     st.subheader("Step 2 — Generate scenarios")
-    st.info("Building passes the regulation. Use **Generate scenarios** in the sidebar to run the "
+    st.info("Building passes the regulation. Use **Generate scenarios button** in the sidebar to run the "
             "single AI generation call.")
     st.stop()
 

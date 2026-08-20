@@ -411,11 +411,6 @@ def transport_elements(model, scale):
 
 
 def spaces_per_storey(model, spaces=None):
-    # Authoring tools write an IfcBuildingStorey for every level they measure against,
-    # including pure datums — a foundation slab, a roof, a sea-level survey mark. Those
-    # host construction elements but no rooms, so nobody evacuates from them. Rooms are
-    # the signal that a level is occupied, and unlike a name blacklist it still works on
-    # models that were not authored in English.
     counts = Counter()
     if spaces is None:
         for space in model.by_type("IfcSpace"):
@@ -437,7 +432,7 @@ def storeys(model, scale, spaces=None):
 
     space_counts = spaces_per_storey(model, spaces)
     occupiable = {s.GlobalId for s in storeys_list if space_counts.get(s.GlobalId)}
-    if not occupiable:                    # no room landed on any level — keep them all
+    if not occupiable:                   
         occupiable = {s.GlobalId for s in storeys_list}
 
     entrance_elevation = None
@@ -449,8 +444,6 @@ def storeys(model, scale, spaces=None):
 
     ground_reference_found = entrance_elevation is not None
     if entrance_elevation is None:
-        # lowest level people are on — a foundation or a sea-level datum sits far below
-        # the entrance and would push every height above ground out by that whole offset
         elevations = [s.Elevation for s in storeys_list
                       if s.Elevation is not None and s.GlobalId in occupiable]
         entrance_elevation = min(elevations) if elevations else 0.0
@@ -471,9 +464,6 @@ def storeys(model, scale, spaces=None):
 
 
 def occupiable_storeys(storeys):
-    # The levels people are actually on. Storeys built before this flag existed carry no
-    # key and all pass; if nothing is flagged the full list comes back rather than leaving
-    # the caller with nothing to measure against.
     occupied = [s for s in storeys if s.get("occupiable", True)]
     return occupied or list(storeys)
 
@@ -824,7 +814,7 @@ if __name__ == "__main__":
     print("Total Walls:", len(report["walls"]))
     print("Total Slabs:", len(report["slabs"]))
     print(f"Total Storeys: {len(occupiable_storeys(report['storeys']))} occupied "
-          f"({len(report['storeys'])} IFC levels incl. datums)")
+          f"({len(report['storeys'])} IFC levels)")
     print("Total Smoke Alarms:", len(report["smoke_alarms"]))
     #print("Total Fire Suppression Terminals:", len(report["fire_suppression_terminals"]))
     print("Total Elevators:", len(report["elevators"]))
