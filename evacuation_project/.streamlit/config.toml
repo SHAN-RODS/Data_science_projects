@@ -1,0 +1,9 @@
+# Streamlit's source watcher probes `hasattr(module, "__path__")` on every entry in sys.modules.
+# langchain_mistralai imports transformers eagerly, and transformers 5.x answers that probe through
+# a lazy __getattr__ that imports every image processor it ships — ~200 modules the app never uses,
+# each announcing itself on stderr and drowning the real log output.
+#
+# Nothing in this project is reloaded by the watcher that we cannot reload by hand, so turn it off.
+# Cost: edits no longer auto-rerun — press R in the browser (or restart) after changing a .py file.
+[server]
+fileWatcherType = "none"

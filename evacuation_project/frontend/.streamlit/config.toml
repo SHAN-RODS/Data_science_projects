@@ -1,0 +1,11 @@
+# Streamlit reads config from the directory it is LAUNCHED from, and this app is started as
+# `streamlit run app.py` from inside frontend/ — so this is the copy that actually takes effect.
+#
+# Why the watcher is off: its source scanner probes `hasattr(module, "__path__")` on every entry in
+# sys.modules. langchain_mistralai imports transformers eagerly, and transformers 5.x answers that
+# probe through a lazy __getattr__ that imports ~200 image-processor modules the app never uses,
+# each announcing itself on stderr and burying the real log output.
+#
+# Cost: edits no longer auto-rerun — press R in the browser (or restart) after changing a .py file.
+[server]
+fileWatcherType = "none"
