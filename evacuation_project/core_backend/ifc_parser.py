@@ -9,7 +9,7 @@ import math
 import sys
 from core_backend.sample_paths import resolve_ifc
 
-
+#This will search the entire IFC property sets and later find a property match based on the keys
 def find_property(psets, keys):
     for pset in psets.values():
         for key in keys:
@@ -17,6 +17,7 @@ def find_property(psets, keys):
                 return pset[key]
     return None
 
+# This will check if the IFC element is an emergency exit or normal exit
 def emergency_exit(name, all_psets):
     clear_name = (name or "").lower()
     if any(word in clear_name for word in ["exit", "escape", "emergency"]):
@@ -42,7 +43,7 @@ def possible_evacuation_lifts(name, psets):
                 return True
     return False
 
-
+#Extracts the 3D position of an IFC element
 def get_position(element_name, scale):
     if getattr(element_name, "ObjectPlacement", None) is None:
         return None
@@ -59,7 +60,7 @@ def load_project_name(model):
         return project[0].Name or "No Name"
     return "No IFC project name found."
 
-#this will project the space solid's triangles or nothing will be done. This will be used by the travel distance to find the room's remote point.
+#this will create the 2D polygon from the 3D geometry. This will be used by the travel distance to find the room's remote point.
 def footprint_polygon(verts, faces): 
     try:
         from shapely.geometry import Polygon
@@ -81,7 +82,7 @@ def footprint_polygon(verts, faces):
         return None
     return footprint if (not footprint.is_empty and footprint.area > 0) else None
 
-
+#It extracts the actaul geometry from the IFC space
 def space_geometry(space, settings):
     try:
         shape = geom_util.create_shape(settings, space)

@@ -28,7 +28,7 @@ def fallback_warning():
     return (f"ANTHROPIC_MODEL is set to {setting('ANTHROPIC_MODEL')} but ANTHROPIC_API_KEY is "
             f"empty or missing, so that model is NOT being used")
 
-
+#It selects the LLM model
 def select_llm(max_tokens=1024, timeout=None):
     req_timeout = timeout if timeout is not None else float(os.getenv("LLM_TIMEOUT", "300"))
     max_retries = int(os.getenv("LLM_MAX_RETRIES", "2"))

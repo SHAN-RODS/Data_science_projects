@@ -11,18 +11,18 @@ def plan_order(exit_item):
         return (0, round(position[0], 2), round(position[1], 2), exit_item.get("id") or "")
     return (1, 0.0, 0.0, exit_item.get("id") or "")
 
-
+#Creates readable exit names in the user interface
 def exit_names(exits):
     return {e["id"]: f"{EXIT_PREFIX} {n}"
             for n, e in enumerate(sorted(exits, key=plan_order), start=1)}
 
-
+#Converts ID into readable name
 def named(exit_id, names):
     if exit_id is None:
         return None
     return names.get(exit_id, exit_id)
 
-
+#Converts names back to IFC IDs
 def resolve_exit_ids(tokens, names):
     by_name = {name.casefold(): exit_id for exit_id, name in names.items()}
     resolved = []
@@ -40,7 +40,7 @@ def resolve_exit_ids(tokens, names):
         resolved.append(hit or token)
     return resolved
 
-
+#This replaces the IDs throughout the generated output
 def name_exit_ids(value, names):
     if isinstance(value, str):
         for exit_id, name in sorted(names.items(), key=lambda kv: len(kv[0]), reverse=True):

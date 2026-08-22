@@ -125,7 +125,7 @@ def multiplier_map(key):
     return {use_type: overrides.get(use_type, values[family])
             for use_type, family in use_type_families.items()}
 
-
+#It gets state-specific multipliers
 def multipliers_for(key, use_types=None):
     entry = occupancy_states[key]
     values = multiplier_map(key)
@@ -140,7 +140,7 @@ def multipliers_for(key, use_types=None):
 def occupied_use_types(spaces):
     return {s.get("use_type") for s in spaces if (s.get("occupant_load") or 0) > 0}
 
-
+#Calculates actaul occupants for a state
 def occupants_under(spaces, key):
     values = multiplier_map(key)
     return int(sum((s.get("occupant_load") or 0) * values.get(s.get("use_type"), 1.0)
@@ -154,7 +154,7 @@ def residential_occupants(spaces, key):
                    if s.get("use_type") in residential_use_types
                    and (s.get("occupant_load") or 0) > 0))
 
-
+#Gives valid occupancy states to LLM
 def state_menu(spaces=None):
     lines = []
     for key, entry in occupancy_states.items():

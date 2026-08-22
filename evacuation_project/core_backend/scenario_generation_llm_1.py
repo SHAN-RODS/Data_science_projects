@@ -1,5 +1,5 @@
 #This is the main part of the project which focuses on suggesting evacuation scenarios using LLM and all the computed values of occupancy, 
-# travel distance and egress are given to the LLM such that it will decide adn give the necessary scenarios
+# travel distance and egress are given to the LLM such that it will decide and give the necessary scenarios
 
 import os
 import sys
@@ -42,7 +42,7 @@ class RestrictedArea(BaseModel):
     reason: str = Field(description="why it is out of use in this scenario, e.g. smoke-logged from the "
                                     "fire origin, closed for maintenance, lifts withdrawn on alarm")
 
-
+#Restricts the occupancy state to predefined values
 OccupancyState = Literal[tuple(state_keys())]
 
 
@@ -176,6 +176,7 @@ class BuildingAnalysis(BaseModel):
                     "distances — not chosen at random. No two may pair the SAME occupancy state with "
                     "the SAME discounted exits; that combination is one scenario run twice.")
 
+#Grounds LLM and preventd hallucinated numbers
 SYSTEM_PROMPT = (
     "You are a fire-safety engineer preparing whole-building evacuation SCENARIOS (the input description "
     "for egress analysis) — not a simulation and not a compliance verdict.\n\n"
@@ -330,7 +331,7 @@ def storey_rollup(grounded):
             row["unreachable"] += 1
     return rollup
 
-
+#This pre-computes impact of losing important exits
 def degraded_cases(summary, classified, grounded, jurisdiction, names, limit=DISCOUNT_VARIANTS):
     if limit <= 0:
         return []
@@ -351,7 +352,7 @@ def degraded_cases(summary, classified, grounded, jurisdiction, names, limit=DIS
         })
     return cases
 
-
+#It builds the computed facts given to LLM
 def facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded, names):
     spaces = grounded["spaces"]
     lines = [
@@ -548,7 +549,7 @@ def model_block(summary):
                           "simulator and key on the IFC GlobalIds used throughout"),
     }
 
-
+#It combines the LLM output+ computed values
 def assemble_scenario(sc, number, names, spaces):
     return {
         "id": f"SCN-{number:03d}",
@@ -593,11 +594,11 @@ GENERATION_MAX_TOKENS = int(os.getenv("EVAC_GEN_MAX_TOKENS", "64000"))
 
 TRUNCATED = {"max_tokens", "length", "model_length"}
 
-
+#It handles LLM returning no structured output
 class NoStructuredReply(RuntimeError):
     """The model answered without the structured result the schema call requires."""
 
-
+#Determines why LLM response failed
 def reply_diagnosis(raw):
     metadata = getattr(raw, "response_metadata", None) or {}
     stop = metadata.get("stop_reason") or metadata.get("finish_reason")
@@ -614,16 +615,16 @@ def reply_diagnosis(raw):
                 f"It began: \"{text[:200]}\"")
     return f"The reply carried no structured result and no text ({stop})."
 
-
+#Defines scenario uniqueness
 def scenario_signature(sc):
     return (sc.conditions.occupancy_state,
             tuple(sorted(sc.conditions.exits_discounted or [])))
 
-
+#Calculates actual occupants from occupancy state
 def room_capacity(spaces, sc):
     return occupants_under(spaces, sc.conditions.occupancy_state)
 
-
+#Detects duplicate scenarios
 def occupancy_findings(analysis, spaces):
     findings = []
     by_signature = defaultdict(list)
@@ -642,7 +643,7 @@ def occupancy_findings(analysis, spaces):
             f"in it.")
     return findings
 
-
+#Tells LLM exactly what went wrong
 def repair_prompt(prompt, failure):
     if isinstance(failure, ValidationError):
         return (f"{prompt}\n\n=== YOUR PREVIOUS REPLY WAS REJECTED ===\n"
@@ -668,7 +669,7 @@ def repair_prompt(prompt, failure):
             f"Return the whole BuildingAnalysis as a structured result. Keep every required field "
             f"and every scenario, but write the prose fields tersely enough that the reply finishes.")
 
-
+#Retry loop for invalid LLM responses
 def invoke_structured(llm, prompt, attempts=None, review=None):
     structured = structured_output(llm, BuildingAnalysis)
     attempts = max(1, attempts if attempts is not None else GENERATION_ATTEMPTS)
@@ -759,7 +760,7 @@ def generate_scenario_object(summary, classified, jurisdiction, gate, llm=None, 
 
     return attach_occupancy(obj)
 
-
+#The main entry point for the entire pipeline
 def build_full_scenario(ifc_path, jurisdiction="england", use_llm=True, gate=None):
     summary = parser_summary(ifc_path)
     summary["source_ifc"] = os.path.basename(ifc_path)

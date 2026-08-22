@@ -32,7 +32,7 @@ def nearest_storey_height(z, storeys):
         return None
     return min(storeys, key=lambda s: abs(s["elevation_m"] - z))["height_above_ground_m"]
 
-
+#Connects spaces through stairs
 def stair_adjacency(spaces, use_type):
     stair_spaces = [sp for sp in spaces
                     if use_type.get(sp["id"]) == "stair" and sp["centroid"] is not None]
@@ -45,7 +45,7 @@ def stair_adjacency(spaces, use_type):
                 pairs.append((stair_spaces[i]["id"], stair_spaces[j]["id"]))
     return pairs
 
-
+# This builds connectivity between spaces
 def build_graph(summary, classified, discounted_exits=frozenset()):
     spaces = {sp["id"]: sp for sp in summary["spaces"]}
     use_type = {c["guid"]: c["use_type"] for c in classified}
@@ -142,7 +142,7 @@ def nearest_exit(space_id, adjacency, positions):
         return None, None, None
     return best
 
-
+#It calculates reachable spaces with the travel distance
 def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdiction="england"):
     adjacency, positions, final_exits = build_graph(summary, classified, discounted_exits)
     use_type = {c["guid"]: c["use_type"] for c in classified}
@@ -234,7 +234,7 @@ def ground_spaces(summary, classified, discounted_exits=frozenset(), jurisdictio
         "travel_engine_report": travel_report,
     }
 
-
+#It recalculates egress when an exit is unavailable
 def discount_exit(summary, classified, exit_id, jurisdiction="england"):
     return ground_spaces(summary, classified, discounted_exits=frozenset({exit_id}),
                          jurisdiction=jurisdiction)

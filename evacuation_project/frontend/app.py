@@ -17,6 +17,7 @@ from core_backend.export_results import (evacuation_time, export_records, build_
                                          fire_related_conditions, movement_characteristic,
                                          pre_movement_time)
 
+#Loading the API key
 load_dotenv()
 os.makedirs("uploads", exist_ok=True)
 
@@ -40,11 +41,11 @@ except Exception:
 # header
 st.title("AI-Assisted Evacuation Scenario Generator")
 st.caption(
-    "Upload an IFC/BIM model. The building is first checked against the selected regulation either pass or fail "
+    "Upload an IFC/BIM model. The building is first checked against the selected regulation either pass or fail"
     "and later gives the AI generated scenarios."
 
 )
-st.caption(f"The Scenario reasoning model used: {model_label}")
+st.caption(f"The Scenario reasoning LLM model used: {model_label}")
 st.divider()
 
 # sidebar
@@ -115,7 +116,7 @@ def bullets(title, items, empty="Nothing recorded for this scenario."):
     else:
         st.caption(empty)
 
-
+#Regulation check of selected document with the ifc elements extracted
 def render_gate(gate, label):
     section("Step 1 — Regulation check",
             "Measured against the selected regulation before any scenario is written.")
@@ -159,8 +160,8 @@ render_gate(gate, jurisdiction_label)
 st.divider()
 
 if not gate["passed"]:
-    st.warning("Fix the flagged violations (or select a different regulation) and re-check. "
-               "The AI will not generate scenarios for a building that fails the regulation.")
+    st.warning("Fix the flagged violations (or select a different regulation) and re-check the system. "
+               "The AI will not generate scenarios for a building that fails the regulations.")
     st.stop()
 
 if obj is None:
@@ -177,7 +178,7 @@ not_assessed = obj.get("not_assessed", [])
 
 
 section(f"Step 2 — Building: {building.get('project')}",
-        "Everything below is computed from the IFC geometry, not chosen by the AI.")
+        "Everything below is computed from the IFC geometry, not chosen by the LLM.")
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Storeys", building.get("storeys"))
@@ -187,7 +188,7 @@ m4.metric("Spaces", len(obj.get("spaces", [])))
 
 with st.container(border=True):
     st.markdown("**Building checks**")
-    st.caption("Run over the generated object before it is exported — nothing here is the AI marking "
+    st.caption("Run over the generated object before it is exported — nothing here is the LLM marking "
                "its own homework.")
 
     inv = validation.get("invariants_checked", {})
@@ -245,8 +246,7 @@ with ref_gaps:
 st.divider()
 
 
-section("Step 3 — Evacuation scenarios",
-        f"{len(scenarios)} scenarios generated for this building. Select one to inspect it.")
+section("Step 3 — Evacuation scenarios")
 
 options = {f"{s['id']} · {str(s.get('type', '')).replace('_', ' ')}": s for s in scenarios}
 choice = st.segmented_control("Scenario", list(options.keys()),
@@ -272,10 +272,10 @@ with st.container(border=True):
         st.write(objective["purpose"])
 
     s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Occupants to evacuate", occupancy.get("occupants_total"))
+    s1.metric("Total Occupants", occupancy.get("occupants_total"))
     s2.metric("Exits available", len(available))
-    s3.metric("Exits discounted", len(discounted))
-    s4.metric("Est. time to clear (s)",
+    s3.metric("Exits blocked", len(discounted))
+    s4.metric("Est. time to clear (seconds)",
               estimate.get("estimated_total_s") if estimate.get("estimated_total_s") is not None
               else "—")
 

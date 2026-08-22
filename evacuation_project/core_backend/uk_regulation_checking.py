@@ -14,6 +14,7 @@ rules_file = {
     "scotland":"scotland_reg.json",
 }
 
+#Loads regulation rules
 def load_regs(jurisdiction="england"):
     jurisdiction = jurisdiction.lower()
     filename = rules_file.get(jurisdiction)
@@ -651,7 +652,7 @@ def slim_flag(f):
         "attribute": f.get("attribute"),
         "issue": f.get("issue"),
     }
-
+#This will check the building against the selected regulations
 def regulation_gate(summary, jurisdiction="england"):
     flags = check_all_rules(summary, jurisdiction)
     violations = [slim_flag(f) for f in flags if not f.get("requires_manual_review")]

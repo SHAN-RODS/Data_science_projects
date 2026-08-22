@@ -48,6 +48,7 @@ def dwelling_occupants(long_name):
         )
     return None, None
 
+#Calcuted from code-based factors
 def occupant_load(space, use_type, on_dwelling_storey=False, jurisdiction="england"):
     area = space.get("area")
     source = source_for(jurisdiction)

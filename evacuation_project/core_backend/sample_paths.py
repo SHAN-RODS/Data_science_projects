@@ -25,7 +25,7 @@ def default_ifc():
                 return str(ifc)
     return None
 
-
+#Resolves IFC input
 def resolve_ifc(argv):
     if len(argv) > 1:
         return argv[1]
