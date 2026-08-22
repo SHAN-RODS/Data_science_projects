@@ -22,3 +22,6 @@ core_backend/Approved_Document_B_volume_1_Dwellings_2019_edition_incorporating_2
 # Untracked working/draft files not yet pushed
 regulations_doc/
 cplan.md
+
+# Local-only test IFC models (large; not source)
+testing IFC data for project/

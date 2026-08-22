@@ -28,3 +28,5 @@ Thumbs.db
 .cl/
 Evacuation_MSc_Project_Report.docx
 Evacuation_Project_Data_Science_Elements.docx
+# Local project archives (large; not source)
+*.zip
