@@ -1,20 +1,3 @@
-#The occupancy states a scenario can be run in, and what each one does to the computed room loads.
-#
-# These multipliers used to be the model's to invent, one per use type per scenario, and it was the
-# wrong job to hand it. The multipliers decide the headcount, but the headcount is computed
-# downstream and the model is told not to state one - so it was choosing numbers whose effect it
-# could not see, against an inequality (night must hold at least as many residents as day) it had no
-# aggregate to check. It got the direction wrong on most runs, and each wrong reply cost a full
-# regeneration of every scenario.
-#
-# Which state a building is worth testing in is judgement, and the model still makes that call. What
-# a named state DOES to a room type is not judgement - it is a standing engineering assumption, the
-# same one every time, and it belongs in a table that can be read, cited and argued with. Putting it
-# here makes the inversion structurally impossible instead of checked: see check_states().
-
-# Use types move together, so the multiplier is set per family and a state overrides only where it
-# has something specific to say. Non-occupiable types (circulation, stair, sanitary, plant,
-# measurement_zone) never carry a computed load, so they need no entry.
 use_type_families = {
     "dwelling": "residential",
     "bedroom": "residential",
@@ -33,9 +16,6 @@ use_type_families = {
 
 families = ("residential", "amenity", "commercial", "ancillary")
 
-# The residential family is what the night/day direction is judged on. Amenity is deliberately out
-# of it: emptying a residents' lounge overnight is correct, and counting it made a correct night
-# state read as an inversion on any building with a large amenity.
 residential_use_types = {ut for ut, family in use_type_families.items()
                          if family == "residential"}
 
@@ -134,14 +114,12 @@ def label_of(key):
 
 
 def period_of(key):
-    """'night', 'day' or 'transitional'. Only night and day are compared for direction - the two
-    transitional states sit between them by construction and comparing them says nothing."""
     entry = occupancy_states.get(key)
     return entry["period"] if entry else None
 
 
 def multiplier_map(key):
-    """Every use type this state touches, as {use_type: multiplier}."""
+
     entry = occupancy_states[key]
     values, overrides = entry["families"], entry["overrides"]
     return {use_type: overrides.get(use_type, values[family])
@@ -149,9 +127,6 @@ def multiplier_map(key):
 
 
 def multipliers_for(key, use_types=None):
-    """The state's multipliers in the shape the scenario object carries them: one record per use
-    type, each with the reason it moves that way. ``use_types`` narrows the list to the types the
-    building actually has, so a scenario is not padded with rows for rooms nobody has."""
     entry = occupancy_states[key]
     values = multiplier_map(key)
     wanted = set(values) if use_types is None else set(use_types)
@@ -163,22 +138,16 @@ def multipliers_for(key, use_types=None):
 
 
 def occupied_use_types(spaces):
-    """The use types in this building that actually carry a computed occupant load. A type with no
-    load has nothing for a multiplier to do."""
     return {s.get("use_type") for s in spaces if (s.get("occupant_load") or 0) > 0}
 
 
 def occupants_under(spaces, key):
-    """How many occupants this state leaves in the building. The same arithmetic
-    occupant_placement.scenario_weights uses to seat them, so the two cannot disagree."""
     values = multiplier_map(key)
     return int(sum((s.get("occupant_load") or 0) * values.get(s.get("use_type"), 1.0)
                    for s in spaces if (s.get("occupant_load") or 0) > 0))
 
 
 def residential_occupants(spaces, key):
-    """How many occupants a state leaves in residential space - what the night/day direction is
-    judged on."""
     values = multiplier_map(key)
     return int(sum((s.get("occupant_load") or 0) * values.get(s.get("use_type"), 1.0)
                    for s in spaces
@@ -187,9 +156,6 @@ def residential_occupants(spaces, key):
 
 
 def state_menu(spaces=None):
-    """The states written out for the generation prompt. Where the building's spaces are known each
-    state carries the headcount its multipliers actually produce - the aggregate the model used to
-    be asked to reason about without ever being shown it."""
     lines = []
     for key, entry in occupancy_states.items():
         line = f"  - {key} - {entry['label']}. {entry['summary']}"
@@ -200,12 +166,6 @@ def state_menu(spaces=None):
 
 
 def check_states():
-    """The table's own invariants, asserted once at import rather than checked on every run.
-
-    The last one is what replaces the retry loop: because occupant loads are never negative, a night
-    state holding every residential use type at the schema maximum of 1.0 cannot seat fewer
-    residents than any daytime state on ANY building. The inversion stops being something a reply
-    can get wrong and becomes something the table makes unreachable."""
     faults = []
     nights = [k for k, v in occupancy_states.items() if v["period"] == "night"]
     if len(nights) != 1:

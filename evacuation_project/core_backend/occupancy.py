@@ -3,14 +3,6 @@
 import math
 import re
 
-# The published factors assume the room is what its category says it is. "common room" at 1 m2 per
-# person is an assembly figure - a room of seated or standing people and little else - and it is
-# right for a residents' lounge. It is badly wrong for a gym, where the equipment occupies the floor,
-# and for a laundry, where people are passing through. Both used to land in communal_amenity and
-# take the assembly factor with them: on the test model a 42.8 m2 gym came out at 22 people, which
-# together with the lounge made shared amenity the largest single block of occupants in the
-# building and skewed every scenario built on it. They are separate use types now, so the assembly
-# factor applies only to the rooms it describes.
 occupancy_load_factors = {
     "commercial":       (6.0,  "office"),
     "communal_amenity": (1.0,  "common room / lounge (assembly)"),

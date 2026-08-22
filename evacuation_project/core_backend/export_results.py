@@ -40,9 +40,6 @@ def ifc_elements(obj, scn):
 
 
 def occupancy_summary(scn):
-    """The headline population: how many, in which occupancy state, and why that state. The state
-    is a key from occupancy_states, so a reader can look up exactly what it did to each room type;
-    the rationale is the AI's, and it is the judgement the state selection rests on."""
     occ = scn.get("occupancy") or {}
     return {
         "occupants_total": occ.get("occupants_total"),
@@ -53,9 +50,6 @@ def occupancy_summary(scn):
 
 
 def pre_movement_time(scn):
-    """The time from ignition to occupants moving, in its four parts: how the fire is detected, how
-    the alarm is raised, how long occupants take to recognise it, and the response delay that
-    follows — the last as a distribution, not a single number."""
     pre = (scn.get("simulation") or {}).get("pre_movement") or {}
     delay = pre.get("response_delay") or {}
     return {
@@ -72,7 +66,6 @@ def pre_movement_time(scn):
 
 
 def simulation_settings(scn):
-    """How the run itself is configured: the state of the building at t=0 and how long to run for."""
     settings = (scn.get("simulation") or {}).get("simulation_settings") or {}
     duration = settings.get("duration") or {}
     return {
@@ -82,8 +75,6 @@ def simulation_settings(scn):
 
 
 def evacuation_time(scn):
-    """The AI's estimate of the time to clear the building, stated before the run — not a result.
-    The egress simulation this record feeds is what actually determines it."""
     estimate = (scn.get("simulation") or {}).get("evacuation_time") or {}
     return {
         "estimated_total_s": estimate.get("estimated_total_s"),
@@ -93,7 +84,6 @@ def evacuation_time(scn):
 
 
 def movement_characteristic(scn):
-    """How the population moves once it starts: the model, and the profile mix driving it."""
     sim = scn.get("simulation") or {}
     return {
         "movement_model": sim.get("movement_model"),
@@ -110,7 +100,6 @@ def movement_characteristic(scn):
 
 
 def fire_related_conditions(scn):
-    """The fire-side assumptions: what burns, where, what it takes out, when people find out."""
     fire = scn.get("fire_conditions") or {}
     return {
         "fire_origin": fire.get("fire_origin"),

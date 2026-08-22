@@ -8,9 +8,6 @@ from langchain_mistralai import ChatMistralAI
 
 load_dotenv()
 
-# Anthropic removed temperature/top_p/top_k on these models — sending one is a 400, not a warning.
-# "opus-5" must stay ahead of nothing in particular but must BE here: it is the model this project
-# runs, and the omission only shows up if ANTHROPIC_TEMPERATURE is ever set.
 NO_SAMPLING_PARAMETER= ("opus-5", "opus-4-8", "opus-4-7", "sonnet-5", "fable-5", "mythos-5")
 
 def accepts_temperature(model_name):
@@ -19,14 +16,11 @@ def accepts_temperature(model_name):
 
 
 def setting(name):
-    # a key left blank in .env reads as "" and is falsy, so an ANTHROPIC_API_KEY= line with nothing
-    # after it silently drops the run onto the fallback provider — treat blank as absent, out loud
     value = os.getenv(name)
     return value.strip() if value and value.strip() else None
 
 
 def fallback_warning():
-    """Why the configured provider is not the one running, or None when nothing is off."""
     if setting("ANTHROPIC_API_KEY"):
         return None
     if not setting("ANTHROPIC_MODEL"):
@@ -74,18 +68,5 @@ def select_llm(max_tokens=1024, timeout=None):
 
 
 def structured_output(llm, schema, include_raw=True):
-    """Bind a schema the way the provider in hand actually honours it.
-
-    langchain_mistralai binds tool calling as ``tool_choice="any"`` — it cannot force a named tool
-    (its own TODO says so) — so a reply that skips the tool parses to None and the whole run is
-    lost. Its json_schema method puts the schema in ``response_format`` where the API enforces it.
-
-    Anthropic cannot take json_schema for BuildingAnalysis. That path compiles the schema into a
-    server-side grammar, and this one is too big for it — the API rejects the request outright with
-    "The compiled grammar is too large". Claude forces a tool BY NAME, though, so tool calling holds
-    the shape just as firmly and skips the grammar step; the reply still arrives schema-validated by
-    the parser. This is the asymmetry the two providers force: Mistral needs json_schema because it
-    cannot force a named tool, Anthropic needs function_calling because it cannot compile this one.
-    """
     method = "function_calling" if isinstance(llm, ChatAnthropic) else "json_schema"
     return llm.with_structured_output(schema, method=method, include_raw=include_raw)

@@ -42,9 +42,7 @@ class RestrictedArea(BaseModel):
     reason: str = Field(description="why it is out of use in this scenario, e.g. smoke-logged from the "
                                     "fire origin, closed for maintenance, lifts withdrawn on alarm")
 
-# The states are a closed set defined in occupancy_states.py, so the model picks one rather than
-# inventing multipliers. The schema turns this into an enum the provider constrains generation
-# against, which is why a mistyped or invented state can no longer reach the object at all.
+
 OccupancyState = Literal[tuple(state_keys())]
 
 
@@ -59,9 +57,7 @@ class ScenarioConditions(BaseModel):
                     "listed in the facts, e.g. 'night_sleeping'. The state IS the population: its "
                     "per-use-type multipliers are applied to the computed room loads for you, and "
                     "both the total and the per-room counts follow from that")
-    # no occupants_total and no multipliers — the state determines both, and room_capacity() derives
-    # the total from the same arithmetic that seats the occupants downstream, so the two can never
-    # disagree and neither can cost a repair attempt.
+
 
 DISTRIBUTIONS = "constant, uniform, normal, lognormal"
 
@@ -395,9 +391,6 @@ def facts_block(building, grounded, exits, stairs, storeys, reg_refs, degraded, 
     for use_type, (occupants, rooms) in sorted(by_use.items(), key=lambda kv: -kv[1][0]):
         lines.append(f"  - {use_type}: {occupants} occupants across {rooms} room(s)")
 
-    # The states and, crucially, the headcount each one produces HERE. Choosing a state without
-    # seeing its effect was the model reasoning blind: the multipliers set the population, but the
-    # population is computed downstream, so nothing in the reply ever showed what a choice cost.
     lines += ["", "OCCUPANCY STATES (choose one per scenario — occupancy_state takes the key):",
               state_menu(spaces)]
 
@@ -513,7 +506,7 @@ def circulation_block(summary):
         position = st.get("position")
         base_z = position[2] if position else None
         spans = [storey_at(base_z), storey_at(base_z + rise) if (base_z is not None and rise) else None]
-        spans = list(dict.fromkeys(s for s in spans if s))      # de-dup, keep base-then-top order
+        spans = list(dict.fromkeys(s for s in spans if s))      
         out.append({
             "id": st["id"], "name": st.get("name"), "type": "internal_stair",
             "width_m": round_number(st.get("width"), 2), "width_source": st.get("width_source"),
@@ -557,8 +550,6 @@ def model_block(summary):
 
 
 def assemble_scenario(sc, number, names, spaces):
-    # occupancy_state and occupants_total live in the occupancy block alone — attach_occupancy() reads
-    # them from here and returns them in the full block, so they are stated once per scenario.
     return {
         "id": f"SCN-{number:03d}",
         "type": sc.type,
@@ -582,13 +573,10 @@ def assemble_scenario(sc, number, names, spaces):
         "risks": name_exit_ids(sc.risks, names),
         "narrative": name_exit_ids(sc.narrative, names),
         "fire_conditions": name_exit_ids(sc.fire_conditions.model_dump(), names),
-        # the multipliers are the state's, looked up here rather than returned by the model, so the
-        # object still carries them where placement, validation and the export already read them
         "simulation": dict(sc.simulation.model_dump(),
                            occupancy_multipliers=multipliers_for(
                                sc.conditions.occupancy_state, occupied_use_types(spaces))),
         "occupancy": {
-            # computed, not chosen: the same sum occupant_placement uses to seat people
             "occupants_total": room_capacity(spaces, sc),
             "occupancy_state": sc.conditions.occupancy_state,
             "occupancy_state_label": label_of(sc.conditions.occupancy_state),
@@ -600,16 +588,9 @@ def assemble_scenario(sc, number, names, spaces):
 
 
 GENERATION_ATTEMPTS = int(os.getenv("EVAC_GEN_ATTEMPTS", "3"))
-# four scenarios come back at roughly 12k tokens, and a repair attempt re-emits the whole structure,
-# so the old 16384 ceiling left little headroom. Claude Sonnet 5 thinks by default and max_tokens caps
-# thinking AND response text together, so the reasoning now eats into the same budget the structure
-# needs — 24000 was sized before that was true. Only what the model writes is billed, so the higher
-# ceiling costs nothing on a normal run — it just stops a long reply being cut off part-way.
-# 64000 is half of Sonnet 5's 128k output ceiling; raise EVAC_GEN_MAX_TOKENS further if needed.
 GENERATION_MAX_TOKENS = int(os.getenv("EVAC_GEN_MAX_TOKENS", "64000"))
 
 
-# Anthropic reports stop_reason, Mistral reports finish_reason, and they spell a cut-off differently
 TRUNCATED = {"max_tokens", "length", "model_length"}
 
 
@@ -618,7 +599,6 @@ class NoStructuredReply(RuntimeError):
 
 
 def reply_diagnosis(raw):
-    """What the provider actually said about the reply, rather than a guess about why it failed."""
     metadata = getattr(raw, "response_metadata", None) or {}
     stop = metadata.get("stop_reason") or metadata.get("finish_reason")
     written = (getattr(raw, "usage_metadata", None) or {}).get("output_tokens")
@@ -636,38 +616,15 @@ def reply_diagnosis(raw):
 
 
 def scenario_signature(sc):
-    """What makes two scenarios the same run: the occupancy state they sit in and the exits they
-    close. The state fixes the population and the rooms it starts in; the discounted exits fix the
-    ways out it has left. Nothing else decides which simulation this is.
-
-    The signature used to be the multiplier set alone, which made the classic pair — a base case,
-    and the same occupancy with the main exit lost — read as a duplicate and cost a repair attempt.
-    That pair is the comparison a discounted-exit study exists to make, so it has to be allowed."""
     return (sc.conditions.occupancy_state,
             tuple(sorted(sc.conditions.exits_discounted or [])))
 
 
 def room_capacity(spaces, sc):
-    """How many occupants this scenario's occupancy state leaves in the building: every room's
-    computed load, thinned by the multiplier its use type takes in that state. This is the sum
-    occupant_placement.scenario_weights takes downstream — the arithmetic that actually seats
-    people — so the stated total and the seating can never disagree."""
     return occupants_under(spaces, sc.conditions.occupancy_state)
 
 
 def occupancy_findings(analysis, spaces):
-    """What is left to review once the occupancy states are a table rather than the model's to
-    invent. Three faults used to live here and all three are now unreachable:
-
-    a total the multipliers could not seat went when the total became the seat count;
-    two scenarios cancelling to the same total went with the multipliers themselves;
-    and a night state thinner than its day went when the states became a table whose night holds
-    every residential use type at 1.0 — the schema maximum, which no daytime state can exceed on any
-    building. occupancy_states.check_states() proves that once at import, instead of a repair
-    attempt proving it again on every run.
-
-    One fault survives, because it is the only one the model can still commit: pairing the same
-    occupancy state with the same discounted exits describes one simulation twice."""
     findings = []
     by_signature = defaultdict(list)
     for number, sc in enumerate(analysis.scenarios, start=1):
@@ -713,18 +670,13 @@ def repair_prompt(prompt, failure):
 
 
 def invoke_structured(llm, prompt, attempts=None, review=None):
-    """``review`` returns a list of findings on an otherwise valid reply. Findings are handed back
-    the way a schema error is, but they never sink the run: a flawed scenario set is still a usable
-    one, and validation reports every finding downstream, so the closest reply is kept rather than an
-    expensive call thrown away."""
     structured = structured_output(llm, BuildingAnalysis)
     attempts = max(1, attempts if attempts is not None else GENERATION_ATTEMPTS)
     last_failure = None
     closest = None
     for attempt in range(attempts):
         ask = prompt if last_failure is None else repair_prompt(prompt, last_failure)
-        # include_raw keeps a failed parse as data rather than an exception, so the reason a reply
-        # was unusable comes off the provider's own metadata instead of being assumed
+
         result = structured.invoke(ask)
         analysis = result.get("parsed")
         error = result.get("parsing_error")
@@ -733,8 +685,6 @@ def invoke_structured(llm, prompt, attempts=None, review=None):
             last_failure = error
             reason = "rejected by the schema"
         elif analysis is None:
-            # a reply carrying no structure parses to None rather than raising, so it has to be
-            # caught here — left alone it reaches the caller as an attribute error on None
             last_failure = NoStructuredReply(reply_diagnosis(result.get("raw")))
             reason = "no structured result returned"
         else:

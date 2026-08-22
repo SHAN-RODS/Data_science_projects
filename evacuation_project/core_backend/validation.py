@@ -26,17 +26,6 @@ ALLOWED_DISTRIBUTIONS = {"constant", "uniform", "normal", "lognormal", "log-norm
 ALLOWED_MOVEMENT_MODELS = {"steering", "sfpe"}
 FRACTION_TOLERANCE = 0.01
 
-# In residential space the night is the busy state: residents are home and asleep, while by day they
-# are out. A scenario set that has it the other way round is inverted, not merely conservative.
-#
-# occupancy_states now makes that unreachable on a generated object — its night state holds every
-# residential use type at 1.0, so no daytime state can exceed it. The check stays because validate()
-# also runs over objects this pipeline did not just produce: an archived run, or a JSON somebody
-# edited by hand. It costs nothing and it is the one place that would still catch either.
-#
-# The set comes from occupancy_states so there is one definition of "residential". Sauna is
-# deliberately not in it — a sauna is shared amenity, not sleeping accommodation, and counting it
-# made a night state that correctly closes the sauna read as thinner than a weekend afternoon.
 SLEEPING_USE_TYPES = residential_use_types
 SLEEPING_SHARE_THRESHOLD = 0.25
 NIGHT_WORDS = ("night", "asleep", "sleeping", "overnight", "night-time", "nighttime")
@@ -44,18 +33,15 @@ DAY_WORDS = ("day", "daytime", "day-time", "working hours", "office hours", "wak
 
 
 def scenario_total(scenario):
-    """The scenario's occupant total. It is stated once, in the occupancy block."""
     return (scenario.get("occupancy") or {}).get("occupants_total")
 
 
 def response_delay(scenario):
-    """The pre-travel activity distribution, one of pre_movement's four parts."""
     pre = (scenario.get("simulation") or {}).get("pre_movement") or {}
     return pre.get("response_delay") or {}
 
 
 def run_duration(scenario):
-    """How long the run is allowed to go for, in seconds."""
     settings = (scenario.get("simulation") or {}).get("simulation_settings") or {}
     return (settings.get("duration") or {}).get("seconds")
 
@@ -146,9 +132,6 @@ def scenario_text(scn, id_tokens):
 
 def number_factcheck(obj):
     allowed = allowed_floats(obj)
-    # identifiers, not quantities. Stairs are named from the facts by their IFC name — "Assembled
-    # Stair:Stair:1429846" — so a route that cites one reads as a fabricated number unless the whole
-    # token is stripped first, the same way exit ids and space guids already are.
     id_tokens = ({e.get("id") for e in obj["exits"]} | {s.get("guid") for s in obj["spaces"]}
                  | set(exit_names(obj["exits"]).values())
                  | {c.get("id") for c in obj.get("circulation", [])}
@@ -170,9 +153,6 @@ def in_range(value, bounds):
 
 
 def evacuation_time_issues(sid, evacuation_time, duration, pre_movement_mean_s):
-    """evacuation_time is the AI's own estimate, not a simulation result, so nothing downstream
-    grounds it. These are the contradictions that make an estimate unusable on its face: a run that
-    ends before the building is clear, and a clearance that beats its own pre-movement time."""
     issues = []
     estimate = evacuation_time.get("estimated_total_s")
 
@@ -275,7 +255,6 @@ def simulation_parameter_issues(obj):
 
 
 def sleeping_share(obj):
-    """Share of the computed occupant load sitting in space where occupants may be asleep."""
     total = sleeping = 0
     for s in obj.get("spaces", []):
         load = s.get("occupant_load") or 0
@@ -286,11 +265,6 @@ def sleeping_share(obj):
 
 
 def state_of_text(state):
-    """Which of the two periods an occupancy_state falls in, if either.
-
-    A generated object names a state from occupancy_states, so the table answers it exactly. The
-    free-text reading below is the fallback for objects written before the states existed, where the
-    field held whatever phrase the model chose."""
     period = period_of(state)
     if period is not None:
         return period if period in ("night", "day") else None
@@ -308,8 +282,6 @@ def state_of(scenario):
 
 
 def multipliers_of(scenario):
-    """The scenario's per-use_type multipliers as a plain dict. A use type the scenario never names
-    is absent here, and every caller defaults it to 1.0 — untouched, not emptied."""
     sim = scenario.get("simulation") or {}
     out = {}
     for m in sim.get("occupancy_multipliers") or []:
@@ -320,15 +292,6 @@ def multipliers_of(scenario):
 
 
 def sleeping_occupancy(spaces, multipliers):
-    """How many occupants a multiplier set leaves in space where people sleep.
-
-    The night/day comparison must be made over these rooms ALONE. Total headcount is the wrong
-    measure: on a building whose non-sleeping space carries most of the load — a block of flats with
-    a large communal amenity — any sane night state empties that amenity, so the total falls below
-    the day's no matter how full the dwellings are. That made the invariant unreachable rather than
-    merely unmet, and the model burned repair attempts failing to satisfy arithmetic that could not
-    be satisfied. Residential occupancy is what 'residents are home at night and out by day'
-    actually claims, and it can always be met."""
     total = 0.0
     for s in spaces:
         use_type = s.get("use_type")
@@ -338,11 +301,6 @@ def sleeping_occupancy(spaces, multipliers):
 
 
 def occupancy_state_issues(obj):
-    """Flag a sleeping-occupancy building whose night state holds fewer RESIDENTS than its day state.
-
-    Compared over sleeping-use rooms only — see sleeping_occupancy() for why the total is the wrong
-    measure. Amenity and commercial space is deliberately outside the comparison: emptying it at
-    night is correct behaviour, not a fault, and counting it hid the fault that matters."""
     share = sleeping_share(obj)
     if share < SLEEPING_SHARE_THRESHOLD:
         return []
@@ -371,20 +329,11 @@ def occupancy_state_issues(obj):
 
 
 def scenario_signature(scenario):
-    """What makes two scenarios the same run: the occupancy state, and the exits it closes. The
-    state fixes the population and the rooms it starts in; the discounted exits fix the ways out.
-
-    This used to key on the multiplier set alone, which flagged the classic pair — a base case and
-    the same occupancy with the main exit discounted — as a duplicate. That pair is the comparison
-    a discounted-exit study exists to make."""
     state = (scenario.get("occupancy") or {}).get("occupancy_state")
     return (state, tuple(sorted(discounted_exit_ids(scenario))))
 
 
 def unknown_state_issues(obj):
-    """An occupancy_state outside the table. Generation cannot produce one — the field is an enum
-    the provider constrains against — so this catches an edited or pre-states object, where the
-    multipliers stored beside it are whatever was written rather than what the state means."""
     return [{"scenario": scn.get("id"), "field": "occupancy.occupancy_state",
              "issue": f"{(scn.get('occupancy') or {}).get('occupancy_state')!r} is not one of the "
                       f"defined occupancy states {sorted(occupancy_states)} — its multipliers "
@@ -394,16 +343,6 @@ def unknown_state_issues(obj):
 
 
 def occupancy_variance_issues(obj):
-    """A scenario set only earns its keep if the scenarios differ.
-
-    Two checks went when the states became a table. A scenario at the full computed load was worth
-    flagging while an empty multiplier set defaulted every room to 1.0; now a state always thins
-    something, and on a wholly residential building the night state SHOULD sit at the computed load
-    — that is the design case, not a fault. Repeated totals went too: two different states can
-    coincide on a headcount while standing the people in different rooms, which is a different
-    evacuation, not a duplicate.
-
-    What remains is genuine duplication — the same state, closing the same exits."""
     scenarios = obj.get("scenarios") or []
     if len(scenarios) < 2:
         return []
@@ -426,8 +365,6 @@ def occupancy_variance_issues(obj):
 
 
 def fire_condition_issues(obj):
-    """An exit is discounted because something makes it unusable, and fire_conditions is where the
-    scenario says what. Flag a missing block, and a fire that disagrees with the exits it closed."""
     issues = []
     for scn in obj.get("scenarios", []):
         sid = scn.get("id")

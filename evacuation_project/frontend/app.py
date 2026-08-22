@@ -73,7 +73,7 @@ with st.sidebar:
             st.session_state.scenario_object = None
             st.rerun()
 
-    # Step 2 unlocks only when the current file+jurisdiction passed the gate.
+    # Step 2 unlocks only when the current file and the jurisdiction passed the regulation checks.
     gate = st.session_state.gate_result
     context_ok = (uploaded_file is not None
                   and st.session_state.gate_context == (uploaded_file.name, jurisdiction))
@@ -124,7 +124,7 @@ def render_gate(gate, label):
         st.success(f"PASS — {label}: no threshold violations found "
                    f"({n_mr} manual-review item(s), non-blocking).")
     else:
-        st.error(f"FAIL — {label}: {n_viol} violation(s). Scenario generation is blocked "
+        st.error(f"FAIL — {label}: {n_viol} violations. Scenario generation is blocked "
                  f"until the building passes.")
     if gate["violations"]:
         st.markdown("**Violations (block generation)**")
@@ -134,7 +134,7 @@ def render_gate(gate, label):
               "issue": v["issue"], "reference": v["reference"]} for v in gate["violations"]],
             width='stretch', hide_index=True)
     if gate["manual_review"]:
-        with st.expander(f"Manual review — {n_mr} items (cannot be decided from the IFC; non-blocking)"):
+        with st.expander(f"Manual review — {n_mr} items (cannot be decided from the IFC and non-blocking)"):
             st.dataframe(
                 [{"rule": v["regulation_id"],
                   "element": f"{v['element_type']}/{v['element_name']}",
@@ -396,13 +396,12 @@ with tab_timing:
     if estimate.get("estimated_total_s") is not None:
         st.divider()
         st.markdown("**Estimated evacuation time**")
-        st.metric("Estimated time to clear the building (s)", estimate["estimated_total_s"])
+        st.metric("Estimated time to clear the buildings", estimate["estimated_total_s"])
         st.caption(f"An engineering estimate worked out ahead of the run, not a simulation result — "
                    f"the egress run this record feeds is what determines the real figure. "
                    f"Basis: {estimate.get('basis') or '—'}")
 
 st.divider()
-
 
 section("Step 4 — Export")
 
