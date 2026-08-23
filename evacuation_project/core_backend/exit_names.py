@@ -4,7 +4,6 @@ EXIT_PREFIX = "Exit"
 
 EXIT_TOKEN = re.compile(rf"^\s*{EXIT_PREFIX}\s*0*(\d+)\b", re.IGNORECASE)
 
-
 def plan_order(exit_item):
     position = exit_item.get("position")
     if position and len(position) >= 2:

@@ -129,7 +129,7 @@ def scenario_text(scn, id_tokens):
         text = text.replace(token, " ")
     return text
 
-
+#Numeric fact-checking validation
 def number_factcheck(obj):
     allowed = allowed_floats(obj)
     id_tokens = ({e.get("id") for e in obj["exits"]} | {s.get("guid") for s in obj["spaces"]}
@@ -402,8 +402,8 @@ def placement_issues(obj):
         allocation, unplaced, unallocated = scenario_occupancy(obj, scn)
         placed, missing = sum(allocation.values()), sum(unplaced.values())
 
-        # the seed block carries only the total and the state; placed_total appears once the full
-        # block has been attached, and only then is there anything to compare against.
+        # the seed block carries only the total and the state and the placed_total appears once the full
+        # block has been attached and then is there anything to compare against.
         stored = scn.get("occupancy") or {}
         if "placed_total" in stored and stored.get("placed_total") != placed:
             issues.append({"scenario": sid, "field": "occupancy.placed_total",
@@ -436,7 +436,7 @@ def placement_issues(obj):
                            "rooms": goalless[:5]})
     return issues
 
-
+#Schema validation 
 def validate(obj):
     validator = Draft202012Validator(scenario_schema)
     schema_errors = [f"{'/'.join(str(p) for p in e.path)}: {e.message}"

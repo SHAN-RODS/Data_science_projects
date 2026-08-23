@@ -13,9 +13,7 @@ from core_backend.uk_regulation_checking import regulation_gate
 from core_backend.llm import select_llm
 from core_backend.scenario_generation_llm_1 import build_full_scenario
 from core_backend.validation import validate
-from core_backend.export_results import (evacuation_time, export_records, build_records,
-                                         fire_related_conditions, movement_characteristic,
-                                         pre_movement_time)
+from core_backend.export_results import (evacuation_time, export_records, build_records,fire_related_conditions, movement_characteristic,pre_movement_time)
 
 #Loading the API key
 load_dotenv()
@@ -43,7 +41,6 @@ st.title("AI-Assisted Evacuation Scenario Generator")
 st.caption(
     "Upload an IFC/BIM model. The building is first checked against the selected regulation either pass or fail"
     "and later gives the AI generated scenarios."
-
 )
 st.caption(f"The Scenario reasoning LLM model used: {model_label}")
 st.divider()
@@ -118,7 +115,7 @@ def bullets(title, items, empty="Nothing recorded for this scenario."):
 
 #Regulation check of selected document with the ifc elements extracted
 def render_gate(gate, label):
-    section("Step 1 — Regulation check",
+    section("Step 1 - Regulation check",
             "Measured against the selected regulation before any scenario is written.")
     n_viol, n_mr = len(gate["violations"]), len(gate["manual_review"])
     if gate["passed"]:
@@ -167,7 +164,7 @@ if not gate["passed"]:
 if obj is None:
     st.subheader("Step 2 — Generate scenarios")
     st.info("Building passes the regulation. Use **Generate scenarios button** in the sidebar to run the "
-            "single AI generation call.")
+            "single LLM generation call.")
     st.stop()
 
 building = obj["building"]
@@ -177,7 +174,7 @@ scenarios = obj.get("scenarios", [])
 not_assessed = obj.get("not_assessed", [])
 
 
-section(f"Step 2 — Building: {building.get('project')}",
+section(f"Step 2 - Building: {building.get('project')}",
         "Everything below is computed from the IFC geometry, not chosen by the LLM.")
 
 m1, m2, m3, m4 = st.columns(4)
@@ -188,8 +185,7 @@ m4.metric("Spaces", len(obj.get("spaces", [])))
 
 with st.container(border=True):
     st.markdown("**Building checks**")
-    st.caption("Run over the generated object before it is exported — nothing here is the LLM marking "
-               "its own homework.")
+    st.caption("Run over the generated object before it is exported")
 
     inv = validation.get("invariants_checked", {})
     q1, q2, q3 = st.columns(3)
@@ -228,7 +224,7 @@ with st.container(border=True):
 ref_exits, ref_gaps = st.tabs([f"Final exits ({len(obj.get('exits', []))})",
                                f"Not assessed ({len(not_assessed)})"])
 with ref_exits:
-    st.caption("Exits are named Exit 1, Exit 2 … across the plan. The IFC name and GlobalId are here "
+    st.caption("Exits are named Exit 1, Exit 2 and so on across the data. The IFC name and GlobalId are here "
                "so a name can be traced back to the door in the model.")
     exit_by_id = {e["id"]: e for e in obj.get("exits", [])}
     st.dataframe(
@@ -237,7 +233,7 @@ with ref_exits:
          for exit_id, name in exit_labels.items()],
         width='stretch', hide_index=True)
 with ref_gaps:
-    st.caption("Missing data or no egress path — surfaced explicitly rather than assumed safe.")
+    st.caption("Missing data or no egress path that surfaced explicitly rather than assumed safe.")
     if not_assessed:
         st.dataframe(not_assessed, width='stretch', hide_index=True)
     else:
@@ -246,7 +242,7 @@ with ref_gaps:
 st.divider()
 
 
-section("Step 3 — Evacuation scenarios")
+section("Step 3 - Evacuation scenarios")
 
 options = {f"{s['id']} · {str(s.get('type', '')).replace('_', ' ')}": s for s in scenarios}
 choice = st.segmented_control("Scenario", list(options.keys()),
@@ -403,7 +399,7 @@ with tab_timing:
 
 st.divider()
 
-section("Step 4 — Export")
+section("Step 4 - Export")
 
 records = build_records(obj)
 records_json = export_records(obj)
