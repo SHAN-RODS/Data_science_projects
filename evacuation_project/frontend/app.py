@@ -268,7 +268,7 @@ with st.container(border=True):
         st.write(objective["purpose"])
 
     s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Total Occupants", occupancy.get("occupants_total"))
+    s1.metric("Total Occupants to be assumed", occupancy.get("occupants_total"))
     s2.metric("Exits available", len(available))
     s3.metric("Exits blocked", len(discounted))
     s4.metric("Est. time to clear (seconds)",
