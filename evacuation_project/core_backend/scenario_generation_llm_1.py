@@ -176,7 +176,7 @@ class BuildingAnalysis(BaseModel):
                     "distances — not chosen at random. No two may pair the SAME occupancy state with "
                     "the SAME discounted exits; that combination is one scenario run twice.")
 
-#Grounds LLM and preventd hallucinated numbers
+#Grounds LLM and prevents hallucinated numbers
 SYSTEM_PROMPT = (
     "You are a fire-safety engineer preparing whole-building evacuation SCENARIOS (the input description "
     "for egress analysis) — not a simulation and not a compliance verdict.\n\n"
