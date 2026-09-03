@@ -58,7 +58,7 @@
     },
     {
       "unique_id": "WAL-R5",  
-      "regulation_name": "Emergency window maximum and minimumheight",   
+      "regulation_name": "Emergency window maximum and minimum height",   
       "description": "The emergency window should have an unobstructable area that should be 0.33m and at least 450mm high and 450m wide.",
       "ifc_element": "IfcSpace",
       "ifc_attribute_involved": "window_height",

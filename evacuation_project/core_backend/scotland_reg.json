@@ -110,7 +110,7 @@
     },
     {
       "unique_id": "SCO-R9",
-      "regulation_name": "Possible sscape routes from protected zones",
+      "regulation_name": "Possible escape routes from protected zones",
       "description": "The external wall adjoining the protected wall protecting the zone near the final exit should not be more than 2m.",
       "ifc_element": "IfcWall",
       "ifc_attribute_involved": "nearest_route",
